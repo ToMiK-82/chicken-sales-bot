@@ -1,0 +1,307 @@
+"""
+Модуль для безопасной отправки и редактирования сообщений.
+✅ Поддержка: message, callback, edited_message, job, chat_id
+✅ Приоритет: редактирование последнего сообщения → новое сообщение
+✅ Повторные попытки с экспоненциальной задержкой
+✅ Разбивка длинных сообщений (>4096)
+✅ parse_mode="HTML" по умолчанию
+✅ Защита от Flood, RetryAfter, BadRequest, Forbidden
+✅ Cooldown по user_id + хешу текста (стабильный)
+✅ Исключения для навигационных кнопок: не блокируются
+✅ Сообщения с reply_markup не попадают под cooldown
+✅ Единая точка отправки: safe_reply
+✅ Автоочистка last_message_id при ошибках
+✅ Безопасная работа при context=None (например, при старте)
+✅ Исправлено: <a href="tel:..."> работает корректно
+✅ Напоминания клиентам за день до поставки (только pending, с записью в user_actions)
+"""
+
+import logging
+import asyncio
+import hashlib
+import re
+from datetime import datetime, timedelta
+from typing import Optional, List, Set
+
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ContextTypes
+from telegram.error import NetworkError, BadRequest, Forbidden, TimedOut
+import httpx
+
+from config.buttons import get_back_only_keyboard
+from database.repository import db
+from html import escape  # Только для экранирования данных, НЕ для HTML-тегов
+
+# ✅ Импортируем safe_reply из нового модуля
+from utils.safe_send import safe_reply
+
+logger = logging.getLogger(__name__)
+
+MAX_MESSAGE_LENGTH = 4096
+MAX_RETRIES = 3
+BASE_RETRY_DELAY = 1.0
+MAX_RETRY_DELAY = 10.0
+COOLDOWN_SECONDS = 60
+
+# 🔍 Регулярное выражение для поиска <a href="tel:...">
+TEL_LINK_PATTERN = re.compile(r'<a[^>]+href\s*=\s*["\'][^"\']*tel:', re.IGNORECASE)
+
+# ✅ Исключения: не блокируются по cooldown
+SKIP_COOLDOWN_PREFIXES: Set[str] = {
+    "Назад", "Отменить", "Нет", "Выход", "Отмена", "Назад в меню", "Назад к меню",
+    "Выйти", "Готово", "Подтвердить", "✅", "❌", "⬅️", "📞", "📦", "📋", "📅", "🐔",
+    "🎁", "📊", "📢", "📈", "Меню", "🏠 Главное меню", "📋 Мои заказы",
+    "+7", "тел:", "поддержка", "контакт", "звонок", "версия", "техподдержка"
+}
+
+# Внутренние ключи user_data
+COOLDOWN_KEY_PREFIX = "last_reply_"
+LAST_MESSAGE_KEY = "last_bot_message_id"  # ID последнего отправленного сообщения
+
+
+def log_action(user_id: int, action: str, description: str):
+    """Логирует действие пользователя."""
+    logger.info(f"[LOG] User {user_id} - {action}: {description}")
+
+
+def _stable_hash(text: str) -> str:
+    """Генерирует стабильный короткий хеш текста на основе SHA-256."""
+    return hashlib.sha256(text.encode()).hexdigest()[:10]
+
+
+# ──────────────────────────────────────────────────────────────
+# Все функции safe_reply, _send_single_message_with_retry и т.д.
+# уже определены в utils.safe_send.py
+# Этот модуль их использует, но не переопределяет
+# ──────────────────────────────────────────────────────────────
+
+
+async def handle_error(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE):
+    """Централизованная обработка ошибок."""
+    update_id = getattr(update, "update_id", "unknown")
+    logger.error(f"❌ Ошибка в обработчике (update_id={update_id}): {context.error}", exc_info=True)
+
+    ignored_errors = (httpx.RequestError, TimeoutError, NetworkError, Forbidden)
+    if isinstance(context.error, ignored_errors):
+        err_msg = str(context.error).lower()
+        ignored_phrases = ["query is too old", "message is not modified", "retry after"]
+        if any(phrase in err_msg for phrase in ignored_phrases):
+            return
+
+    try:
+        target_chat_id = None
+        if update and update.effective_chat:
+            target_chat_id = update.effective_chat.id
+        elif context and hasattr(context, "job") and context.job:
+            target_chat_id = context.job.chat_id
+
+        if target_chat_id:
+            await safe_reply(
+                update=update,
+                context=context,
+                text="⚠️ Произошла ошибка. Попробуйте позже.",
+                reply_markup=get_back_only_keyboard(),
+                disable_cooldown=True,
+                chat_id=target_chat_id
+            )
+    except Exception as e:
+        logger.error(f"❌ Не удалось ответить пользователю: {e}")
+
+    try:
+        devops_chat_id = getattr(context, "application", None)
+        devops_chat_id = getattr(devops_chat_id, "bot_data", {}).get("DEVOPS_CHAT_ID")
+        if not devops_chat_id:
+            return
+
+        error_text = (
+            "🚨 <b>Критическая ошибка в боте</b>\n"
+            f"<code>{escape(str(context.error))}</code>\n"
+            f"<b>Update ID:</b> <code>{update_id}</code>"
+        )
+
+        await safe_reply(
+            update=None,
+            context=context,
+            text=error_text,
+            chat_id=devops_chat_id,
+            disable_cooldown=True,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при уведомлении в DevOps: {e}", exc_info=True)
+
+
+# === ЕЖЕДНЕВНЫЙ ОТЧЁТ ===
+async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        devops_chat_id = getattr(context, "application", None)
+        devops_chat_id = getattr(devops_chat_id, "bot_data", {}).get("DEVOPS_CHAT_ID")
+        if not devops_chat_id:
+            logger.warning("🔧 DEVOPS_CHAT_ID не задан — не могу отправить ежедневный отчёт.")
+            return
+
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        total_orders = await db.execute_read(
+            "SELECT COUNT(*) FROM orders WHERE DATE(created_at) = ?", (yesterday,)
+        )
+        active_orders = await db.execute_read(
+            "SELECT COUNT(*), SUM(quantity * price) FROM orders WHERE status = 'active'"
+        )
+        new_orders = await db.execute_read(
+            "SELECT SUM(quantity * price) FROM orders WHERE status = 'active' AND DATE(created_at) = ?",
+            (yesterday,)
+        )
+        upcoming = await db.execute_read(
+            "SELECT COUNT(*), SUM(available_quantity) FROM stocks WHERE status = 'active' AND date >= DATE('now') AND date <= DATE('now', '+7 days')"
+        )
+
+        stats = {
+            "total_orders": total_orders[0][0] if total_orders and total_orders[0] else 0,
+            "active_count": active_orders[0][0] if active_orders and active_orders[0] else 0,
+            "active_revenue": int(active_orders[0][1] or 0),
+            "new_revenue": int(new_orders[0][0] or 0),
+            "upcoming_shipments": upcoming[0][0] if upcoming and upcoming[0] else 0,
+            "upcoming_chicks": upcoming[0][1] or 0,
+        }
+
+        report = (
+            "📈 <b>Ежедневный отчёт</b>\n"
+            f"📆 Дата: <code>{yesterday}</code>\n"
+            f"🛒 <b>Новых заказов:</b> {stats['total_orders']}\n"
+            f"💰 <b>Выручка за день:</b> {stats['new_revenue']} руб.\n"
+            f"📦 <b>Активных заказов:</b> {stats['active_count']} на {stats['active_revenue']} руб.\n"
+            f"📅 <b>Поставок в ближайшие 7 дней:</b> {stats['upcoming_shipments']}\n"
+            f"🐥 <b>Всего цыплят:</b> {stats['upcoming_chicks']}\n"
+            f"✅ <b>Статус:</b> Готов"
+        )
+
+        await safe_reply(
+            update=None,
+            context=context,
+            text=report,
+            chat_id=devops_chat_id,
+            disable_cooldown=True,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при генерации ежедневного отчёта: {e}", exc_info=True)
+
+
+# === НАПОМИНАНИЕ АДМИНАМ ЗА 2 ДНЯ ===
+async def send_admin_shipment_reminder(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        devops_chat_id = getattr(context, "application", None)
+        devops_chat_id = getattr(devops_chat_id, "bot_data", {}).get("DEVOPS_CHAT_ID")
+        if not devops_chat_id:
+            return
+
+        reminder_date = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
+        result = await db.execute_read(
+            "SELECT breed, incubator, available_quantity, price FROM stocks WHERE date = ? AND status = 'active' AND available_quantity > 0",
+            (reminder_date,)
+        )
+
+        if not result:
+            return
+
+        message_lines = [f"🔔 <b>Напоминание: поставки через 2 дня ({reminder_date})</b>"]
+        for breed, incubator, avail, price in result:
+            incubator_text = f" | 🏢 <b>{escape(incubator)}</b>" if incubator else ""
+            message_lines.append(
+                f"🐔 <b>{escape(breed)}</b>{incubator_text}\n"
+                f"📦 <b>{avail} шт.</b> × <b>{int(float(price))} руб.</b>\n"
+                "──────────────────"
+            )
+
+        await safe_reply(
+            update=None,
+            context=context,
+            text="\n".join(message_lines),
+            chat_id=devops_chat_id,
+            disable_cooldown=True,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке напоминания админам: {e}", exc_info=True)
+
+
+# === НАПОМИНАНИЕ КЛИЕНТУ ЗА 1 ДЕНЬ ===
+async def send_customer_order_reminder(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Отправляет напоминание клиентам, у которых на завтра назначен заказ
+    и статус которого 'pending' (не подтверждён).
+    Записывает факт отправки в user_actions.
+    """
+    try:
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        rows = await db.execute_read(
+            """
+            SELECT o.id, o.user_id, o.breed, o.quantity, o.price, o.date, o.phone
+            FROM orders o
+            WHERE o.status = 'pending'
+              AND o.date = ?
+              AND o.id NOT IN (
+                  SELECT target_id FROM user_actions
+                  WHERE action = 'reminder_sent' AND target_id = o.id
+              )
+            """,
+            (tomorrow,)
+        )
+
+        if not rows:
+            logger.info(f"📭 На {tomorrow} нет заказов, требующих напоминания.")
+            return
+
+        for order_id, user_id, breed, quantity, price, order_date, phone in rows:
+            try:
+                target_user_id = user_id
+                if not target_user_id:
+                    # ✅ Отложенный импорт — разрывает цикл!
+                    from utils.notifications import _get_user_id_by_phone
+                    target_user_id = await _get_user_id_by_phone(phone)
+                if not target_user_id:
+                    logger.warning(f"❌ Не найден user_id для заказа {order_id}, телефон {phone}")
+                    continue
+
+                total = quantity * int(price) if price else 0
+                date_str = datetime.strptime(order_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+                message = (
+                    f"⏰ <b>Напоминание о завтрашней поставке!</b>\n\n"
+                    f"🐔 Порода: <b>{breed}</b>\n"
+                    f"📦 Количество: <b>{quantity} шт.</b>\n"
+                    f"💰 Цена: <b>{int(price)} руб.</b> × {quantity} = <b>{total} руб.</b>\n"
+                    f"📅 Поставка: <b>{date_str}</b>\n\n"
+                    f"Пожалуйста, подтвердите или отмените заказ, чтобы мы знали ваше решение.\n"
+                    f"Используйте кнопки ниже или свяжитесь с администратором."
+                )
+
+                await safe_reply(
+                    update=None,
+                    context=context,
+                    text=message,
+                    chat_id=target_user_id,
+                    disable_cooldown=True,
+                    parse_mode="HTML"
+                )
+
+                await db.execute_write(
+                    "INSERT INTO user_actions (user_id, action, target_id) VALUES (?, ?, ?)",
+                    (target_user_id, 'reminder_sent', order_id)
+                )
+                logger.info(f"📩 Напоминание для заказа {order_id} отправлено пользователю {target_user_id}")
+
+            except Exception as e:
+                logger.error(f"❌ Не удалось отправить напоминание для заказа {order_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке напоминаний клиентам: {e}", exc_info=True)
+
+
+__all__ = [
+    "safe_reply",
+    "handle_error",
+    "send_daily_report",
+    "send_admin_shipment_reminder",
+    "send_customer_order_reminder",
+]
