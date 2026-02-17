@@ -1,14 +1,19 @@
+# === OS ===
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
 # === Python ===
 __pycache__/
-*.pyc
-*.pyo
+*.py[co]
 *.pyd
 *.pyc
 .Python
-env/
-venv/
-ENV/
-.python-version
+python.exe
 pip-log.txt
 pip-delete-this-directory.txt
 .tox
@@ -26,36 +31,57 @@ coverage.xml
 # === Virtual Environment ===
 venv/
 env/
+ENV/
 .env
 .env.local
+.python-version
 
-# === IDE ===
-.DS_Store
-Thumbs.db
+# === IDE / Редакторы ===
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+*.sublime-project
+*.sublime-workspace
 
-# === База данных и локальные файлы ===
+# === База данных SQLite (КРИТИЧНО) ===
+# Основной файл базы
+chicken_sales.db
+# WAL-режим (автоматически создаются)
+*.db-wal
+*.db-shm
+# Общие шаблоны
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 db.sqlite
 db.sqlite-journal
-exports/
-data/
-local_settings.py
 
-# === Логи и временные файлы ===
-logs/
-*.log
+# === Экспортные и временные файлы ===
+exports/
 temp/
 tmp/
+logs/
+data/
 
-# === OS ===
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# === Конфигурация и локальные настройки ===
+local_settings.py
+config/local.py
+.secrets.json
+
+# === Артефакты сборки ===
+build/
+dist/
+*.egg-info/
+*.egg
+
+# === Активные процессы (защита при ошибках) ===
+# Не коммитить, даже если случайно создались
+*.lock
+bot.lock
+
+# === Резервные копии (часто создаются редакторами) ===
+*~.*
+*.bak
+*.tmp
