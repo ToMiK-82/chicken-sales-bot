@@ -2,16 +2,20 @@
 import aiohttp
 import asyncio
 import logging
+import os
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
-# ✅ URL HTTP-сервиса (обрати внимание: /Order, а не /CreateOrder)
-HTTP_URL = "http://194.28.90.23:9999/ka/hs/sales_bot/Order"
+# 🔐 Загружаем параметры из .env
+HTTP_URL = os.getenv("ERP_HTTP_URL")
+USERNAME = os.getenv("ERP_USERNAME")
+PASSWORD = os.getenv("ERP_PASSWORD")
 
-# ✅ Данные для Basic Auth
-USERNAME = "Python"
-PASSWORD = "Serafima"
+if not all([HTTP_URL, USERNAME, PASSWORD]):
+    logger.critical("❌ Не заданы ERP_... переменные в .env")
+    raise ValueError("ERP_HTTP_URL, ERP_USERNAME, ERP_PASSWORD обязательны")
+
 
 async def send_order_to_1c(
     order_id: int,
@@ -50,22 +54,41 @@ async def send_order_to_1c(
                             doc_number = result.get("doc_number", "неизвестно")
                             return True, f"Документ №{doc_number} создан"
                         else:
-                            return False, "Ошибка: success=false"
-                    except:
+                            error_msg = result.get("error", "unknown error")
+                            return False, f"Ошибка 1С: {error_msg}"
+                    except Exception as e:
                         # Если не JSON, то просто текст (номер документа)
                         text = await resp.text()
-                        return True, f"Документ №{text} создан"
+                        if text.strip():
+                            return True, f"Документ №{text.strip()} создан"
+                        else:
+                            return False, "Пустой ответ от 1С"
                 else:
                     text = await resp.text()
                     return False, f"HTTP {resp.status}: {text[:200]}"
 
     except asyncio.TimeoutError:
-        return False, "Timeout"
+        return False, "⏰ Таймаут подключения к 1С (30 сек)"
+    except aiohttp.ClientConnectionError:
+        return False, "🔌 Нет соединения с 1С (проверьте URL и доступность)"
     except Exception as e:
-        return False, str(e)
+        logger.error(f"❌ Ошибка отправки в 1С: {e}", exc_info=True)
+        return False, f"Ошибка: {str(e)}"
 
 
-async def send_to_1c(order_id: int, phone: str, breed: str, quantity: int, price: float = 85.0, action: str = "issue") -> Tuple[bool, str]:
+async def send_to_1c(
+    order_id: int,
+    phone: str,
+    breed: str,
+    quantity: int,
+    price: float = 85.0,
+    action: str = "issue"
+) -> Tuple[bool, str]:
+    """
+    Обёртка для отправки в 1С.
+    Сейчас используется только при выдаче (issue).
+    """
     if action != "issue":
         return True, "Skipped"
+
     return await send_order_to_1c(order_id, breed, quantity, price)
