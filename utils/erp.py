@@ -92,3 +92,40 @@ async def send_to_1c(
         return True, "Skipped"
 
     return await send_order_to_1c(order_id, breed, quantity, price)
+
+
+# === 🔧 Диагностика 1С: команда /getib ===
+
+async def get_ib_parameters() -> tuple[bool, str]:
+    """
+    Возвращает текущие параметры подключения к 1С.
+    Для диагностики командой /getib.
+    """
+    try:
+        params = {
+            "ERP_HTTP_URL": HTTP_URL,
+            "ERP_USERNAME": USERNAME,
+            "Configured": "✅ Да" if all([HTTP_URL, USERNAME, PASSWORD]) else "❌ Нет",
+            "Available": "🟢 Доступен" if await _check_connection() else "🔴 Недоступен"
+        }
+        result = "\n".join(f"{k}: {v}" for k, v in params.items())
+        return True, result
+    except Exception as e:
+        return False, f"Ошибка генерации: {e}"
+
+
+async def _check_connection() -> bool:
+    """
+    Проверяет доступность сервера 1С по URL (GET-запрос).
+    Не отправляет данные — только проверяет, жив ли сервер.
+    """
+    if not HTTP_URL:
+        return False
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(HTTP_URL, timeout=10) as resp:
+                # Даже если метод не разрешён (405) — сервер жив
+                return resp.status in (200, 405, 401, 403)
+    except Exception as e:
+        logger.debug(f"❌ Сервер 1С недоступен: {e}")
+        return False
