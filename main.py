@@ -1,5 +1,5 @@
 """
-🚀 Основной файл запуска бота — v4.9.3 (production-ready + auto-restart fix + test mode + startup fix)
+🚀 Основной файл запуска бота — v4.9.4 (production-ready + auto-restart notification + test mode + startup fix)
 ✅ Полная поддержка админ-панели
 ✅ Группы обработчиков:
    - group=-1 — автозапуск (первым!)
@@ -14,6 +14,7 @@
 ✅ Персистентность отключена: состояние НЕ сохраняется между перезапусками
 ✅ Совместимо с python-telegram-bot v22.5
 ✅ Добавлен режим тестирования: python main.py --test
+✅ Уведомление админам при перезапуске
 """
 
 import sys
@@ -31,7 +32,7 @@ from telegram.ext import (
 )
 
 # --- 🚀 Версия бота — ЕДИНСТВЕННОЕ место определения ---
-BOT_VERSION = "v4.9.3"
+BOT_VERSION = "v4.9.4"
 
 print("📍 Python executable:", sys.executable)
 try:
@@ -182,6 +183,46 @@ async def force_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, f"❌ Ошибка: {e}")
 
 
+# --- Отправка уведомления админам о перезапуске ---
+async def send_startup_notification(application: Application):
+    """
+    Отправляет уведомление всем администраторам о том, что бот был перезапущен.
+    Вызывается в конце post_init.
+    """
+    start_time = application.bot_data.get("start_time")
+    if not start_time:
+        logger.warning("❌ Не могу отправить уведомление: start_time не задан")
+        return
+
+    admin_ids = application.bot_data.get("ADMIN_IDS", [])
+    if not admin_ids:
+        logger.info("📭 Нет админов для уведомления — пропускаем")
+        return
+
+    text = (
+        "🟢 <b>Бот перезапущен</b>\n\n"
+        f"📦 Версия: <code>{BOT_VERSION}</code>\n"
+        f"📅 Время: <code>{start_time.strftime('%d.%m.%Y %H:%M:%S')}</code>\n"
+        f"🛠 Источник: <i>вручную или через update_and_restart.bat</i>"
+    )
+
+    delivered = 0
+    for admin_id in admin_ids:
+        try:
+            await application.bot.send_message(
+                chat_id=admin_id,
+                text=text,
+                parse_mode="HTML",
+                disable_notification=False
+            )
+            delivered += 1
+            logger.info(f"📬 Уведомление о перезапуске отправлено админу {admin_id}")
+        except Exception as e:
+            logger.error(f"❌ Не удалось отправить уведомление админу {admin_id}: {e}")
+
+    logger.info(f"✅ Уведомления о перезапуске: {delivered}/{len(admin_ids)} доставлено")
+
+
 # --- Инициализация при запуске ---
 async def post_init(application: Application):
     from config.buttons import get_main_keyboard
@@ -197,10 +238,9 @@ async def post_init(application: Application):
         logger.critical(f"❌ Ошибка инициализации БД: {e}", exc_info=True)
         raise
 
-    # === ДОБАВЬ ЭТУ СТРОКУ СРАЗУ ПОСЛЕ init_db() ===
+    # === Сохраняем экземпляр БД в bot_data ===
     application.bot_data["db"] = db
     logger.info("✅ Экземпляр db сохранён в bot_data['db']")
-
 
     # === 2. Создание папки экспорта ===
     os.makedirs("exports", exist_ok=True)
@@ -296,7 +336,14 @@ async def post_init(application: Application):
     application.bot_data["ADMIN_PASSWORD"] = ADMIN_PASSWORD
     application.bot_data["available_breeds"] = available_breeds
     application.bot_data["start_time"] = datetime.now()
-    application.bot_data["INITIALIZED"] = True  # ⚠️ Ключевой флаг для auto_start_if_needed
+    application.bot_data["INITIALIZED"] = True
+
+    # === 12. Уведомление админам о перезапуске ===
+    try:
+        await send_startup_notification(application)
+        logger.info("📬 Уведомление о перезапуске отправлено админам")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке уведомления о перезапуске: {e}")
 
     logger.info("✅ Готов к работе. Никаких автоматических сообщений не отправлено.")
 
@@ -402,9 +449,10 @@ def register_handlers(application: Application):
     except Exception as e:
         logger.error(f"❌ Ошибка регистрации /backup: {e}")
 
-    # ✅ ДОБАВЛЕНО: /getib — Получение параметров ИБ из 1С
+    # ✅ /getib — Получение параметров ИБ из 1С
     try:
         from utils.erp import get_ib_parameters
+
         async def getib_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id = update.effective_user.id
             admin_ids = context.application.bot_data.get("ADMIN_IDS", [])
@@ -415,7 +463,6 @@ def register_handlers(application: Application):
             await safe_reply(update, context, "🔍 Запрашиваем параметры информационной базы...", disable_cooldown=True)
             success, result = await get_ib_parameters()
             if success:
-                # Отправляем XML частями, если он слишком длинный
                 if len(result) > 4096:
                     parts = [result[i:i+4096] for i in range(0, len(result), 4096)]
                     for part in parts:
@@ -435,10 +482,6 @@ def register_handlers(application: Application):
 def main():
     logger.info("🚀 Инициализация бота...")
     try:
-        # Убрали создание папки data — она больше не нужна
-        # os.makedirs("data", exist_ok=True)  # ❌ Удалено
-
-        # Убрали persistence полностью
         application = (
             ApplicationBuilder()
             .token(TOKEN)
