@@ -1,5 +1,5 @@
 """
-🚀 Основной файл запуска бота — v4.9.4 (production-ready + auto-restart notification + test mode + startup fix)
+🚀 Основной файл запуска бота — v4.9.4 (production-ready + test mode + startup fix)
 ✅ Полная поддержка админ-панели
 ✅ Группы обработчиков:
    - group=-1 — автозапуск (первым!)
@@ -14,7 +14,6 @@
 ✅ Персистентность отключена: состояние НЕ сохраняется между перезапусками
 ✅ Совместимо с python-telegram-bot v22.5
 ✅ Добавлен режим тестирования: python main.py --test
-✅ Уведомление админам при перезапуске
 """
 
 import sys
@@ -95,14 +94,13 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     devops_id = context.application.bot_data.get("DEVOPS_CHAT_ID")
-    admin_ids = context.application.bot_data.get("ADMIN_IDS", [])
 
     error_text = (
         "🚨 <b>Критическая ошибка в боте</b>\n\n"
         f"<code>{type(context.error).__name__}: {context.error}</code>"
     )
 
-    # Уведомляем DevOps
+    # Уведомляем только DevOps
     if devops_id:
         try:
             await context.bot.send_message(
@@ -114,23 +112,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.info("✉️ Отчёт об ошибке отправлен в DevOps")
         except Exception as e:
             logger.error(f"❌ Не удалось отправить в DevOps: {e}")
-
-    # Уведомляем админов
-    if admin_ids:
-        delivered = 0
-        for admin_id in admin_ids:
-            try:
-                await safe_reply(
-                    update=None,
-                    context=context,
-                    text=f"🔔 <b>Уведомление для админов</b>\n\n{error_text}",
-                    chat_id=admin_id,
-                    disable_cooldown=True
-                )
-                delivered += 1
-            except Exception as e:
-                logger.error(f"❌ Не удалось уведомить админа {admin_id}: {e}")
-        logger.info(f"📬 Уведомление об ошибке отправлено: {delivered}/{len(admin_ids)}")
 
 
 # --- Команда /status ---
@@ -181,46 +162,6 @@ async def force_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка в /forcestart: {e}", exc_info=True)
         await safe_reply(update, context, f"❌ Ошибка: {e}")
-
-
-# --- Отправка уведомления админам о перезапуске ---
-async def send_startup_notification(application: Application):
-    """
-    Отправляет уведомление всем администраторам о том, что бот был перезапущен.
-    Вызывается в конце post_init.
-    """
-    start_time = application.bot_data.get("start_time")
-    if not start_time:
-        logger.warning("❌ Не могу отправить уведомление: start_time не задан")
-        return
-
-    admin_ids = application.bot_data.get("ADMIN_IDS", [])
-    if not admin_ids:
-        logger.info("📭 Нет админов для уведомления — пропускаем")
-        return
-
-    text = (
-        "🟢 <b>Бот перезапущен</b>\n\n"
-        f"📦 Версия: <code>{BOT_VERSION}</code>\n"
-        f"📅 Время: <code>{start_time.strftime('%d.%m.%Y %H:%M:%S')}</code>\n"
-        f"🛠 Источник: <i>вручную или через update_and_restart.bat</i>"
-    )
-
-    delivered = 0
-    for admin_id in admin_ids:
-        try:
-            await application.bot.send_message(
-                chat_id=admin_id,
-                text=text,
-                parse_mode="HTML",
-                disable_notification=False
-            )
-            delivered += 1
-            logger.info(f"📬 Уведомление о перезапуске отправлено админу {admin_id}")
-        except Exception as e:
-            logger.error(f"❌ Не удалось отправить уведомление админу {admin_id}: {e}")
-
-    logger.info(f"✅ Уведомления о перезапуске: {delivered}/{len(admin_ids)} доставлено")
 
 
 # --- Инициализация при запуске ---
@@ -300,17 +241,18 @@ async def post_init(application: Application):
 
     # === 9. Уведомление в DevOps ===
     bot = application.bot
-    env_tag = "🟢 <b>PRODUCTION</b>" if not DEBUG else "🟠 <b>DEBUG MODE</b>"
+    mode_emoji = "🟢" if not DEBUG else "🟠"
+    mode_text = "PRODUCTION" if not DEBUG else "DEBUG"
     formatted_start_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
     startup_text = (
-        f"{env_tag}\n"
-        f"🟢 <b>Бот успешно запущен и работает</b> ✅\n\n"
-        f"🔧 Состояние: все модули инициализированы\n"
+        f"{mode_emoji} <b>Бот успешно запущен</b>\n\n"
         f"📦 Версия: <code>{BOT_VERSION}</code>\n"
         f"📅 Время старта: <code>{formatted_start_time}</code>\n"
-        f"📡 Режим работы: <b>production-ready</b>"
+        f"🔧 Состояние: все модули инициализированы\n"
+        f"⚙️ Режим: <b>{mode_text}</b>"
     )
+
 
     try:
         await bot.send_message(
@@ -337,13 +279,6 @@ async def post_init(application: Application):
     application.bot_data["available_breeds"] = available_breeds
     application.bot_data["start_time"] = datetime.now()
     application.bot_data["INITIALIZED"] = True
-
-    # === 12. Уведомление админам о перезапуске ===
-    try:
-        await send_startup_notification(application)
-        logger.info("📬 Уведомление о перезапуске отправлено админам")
-    except Exception as e:
-        logger.error(f"❌ Ошибка при отправке уведомления о перезапуске: {e}")
 
     logger.info("✅ Готов к работе. Никаких автоматических сообщений не отправлено.")
 
