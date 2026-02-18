@@ -47,7 +47,7 @@ ENV/
 
 # === База данных SQLite (КРИТИЧНО) ===
 # Основной файл базы
-#chicken_sales.db
+chicken_sales.db
 # WAL-режим (автоматически создаются)
 *.db-wal
 *.db-shm
