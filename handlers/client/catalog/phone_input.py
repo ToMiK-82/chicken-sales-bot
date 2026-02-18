@@ -1,4 +1,9 @@
-"""Ввод номера телефона: контакт или текст."""
+"""
+Ввод номера телефона: контакт или текст.
+✅ Проверка верификации
+✅ Ограничение >50 шт. только для не-админов
+✅ Админ может вносить любые заказы от лица клиента
+"""
 
 from datetime import datetime
 from telegram import Update
@@ -48,6 +53,7 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         text = update.message.text.strip()
         if text == BTN_BACK_FULL:
             return await handle_back_button(update, context)
+        # Приводим к формату +7
         if text.startswith("8") and len(text) == 11:
             text = "+7" + text[1:]
         elif text.startswith("+7") and len(text) == 12:
@@ -64,26 +70,44 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await safe_reply(update, context, "🚫 Номер заблокирован.", reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
+    # Сохраняем номер и статус
     context.user_data.update({
         "phone": phone,
         "phone_verified": verified,
         "saved_phone": {"phone": phone, "verified": verified}
     })
 
+    # Получаем количество и проверяем права
     qty = context.user_data["selected_quantity"]
+    user_id = update.effective_user.id
+    is_admin = user_id in context.application.bot_data.get("ADMIN_IDS", [])
+
+    # ✅ Снимаем ограничение >50 ТОЛЬКО для админов
     if not verified and qty > 50:
-        await safe_reply(update, context, "📞 Для >50 шт. нужен верифицированный номер.", reply_markup=get_back_only_keyboard())
-        return ENTER_PHONE
+        if not is_admin:
+            await safe_reply(update, context,
+                             "📞 Для заказа более 50 шт. нужен верифицированный номер.",
+                             reply_markup=get_back_only_keyboard())
+            return ENTER_PHONE
+        else:
+            # Админ может вносить >50 без верификации
+            from logging import getLogger
+            logger = getLogger(__name__)
+            logger.info(f"🛠️ Админ {user_id} вносит заказ >50 шт. за клиента: {phone}")
 
-    if not verified and not await db.is_trusted_phone(phone):
-        attempts = await db.get_daily_attempts(phone)
-        if attempts >= 2:
-            await db.block_phone(phone, "Слишком много попыток", 24)
-            clear_catalog_data(context)
-            await safe_reply(update, context, "🚫 Номер заблокирован.", reply_markup=get_main_keyboard())
-            return ConversationHandler.END
-        await db.add_attempt(phone)
+    # 🔒 Попытки и блокировки — только для не-админов
+    if not is_admin:
+        if not verified and not await db.is_trusted_phone(phone):
+            attempts = await db.get_daily_attempts(phone)
+            if attempts >= 2:
+                await db.block_phone(phone, "Слишком много попыток", 24)
+                clear_catalog_data(context)
+                await safe_reply(update, context, "🚫 Номер заблокирован.", reply_markup=get_main_keyboard())
+                return ConversationHandler.END
+            await db.add_attempt(phone)
+    # ❌ Админ не тратит попытки и не блокируется
 
+    # Переход к подтверждению заказа
     context.user_data["navigation_stack"].append(CONFIRM_ORDER)
     
     # ✅ Ленивый импорт — безопасный переход к подтверждению

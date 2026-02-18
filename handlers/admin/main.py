@@ -1,6 +1,6 @@
 """
 Админ-панель: команды, проверка прав, выход.
-✅ /admin — умное приветствие (первый раз — подробно)
+✅ /admin — умное приветствие + запрос пароля
 ✅ Кнопки: Выход, Справка
 ✅ Группировка: group=0 — команды, group=1 — кнопки и диалоги
 """
@@ -36,44 +36,88 @@ logger = logging.getLogger(__name__)
 async def start_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Открывает админ-панель.
-    Показывает подробное приветствие только при первом входе.
+    Если пользователь ещё не аутентифицирован — запрашивает пароль.
+    После ввода правильного пароля показывает меню.
     """
     user = update.effective_user
     db = context.application.bot_data["db"]
     debug_mode = context.application.bot_data.get("DEBUG", False)
+    ADMIN_PASSWORD = context.application.bot_data.get("ADMIN_PASSWORD")
 
-    # Проверяем, первый ли раз заходит админ
+    # Проверяем, уже ли авторизован
+    if context.user_data.get("is_admin_authenticated"):
+        welcome_text = "🔐 <b>Админ-панель</b> | Готов к работе."
+        await safe_reply(
+            update,
+            context,
+            welcome_text,
+            reply_markup=get_admin_main_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    # Если пароль не задан — пускаем без проверки (на случай ошибки)
+    if not ADMIN_PASSWORD:
+        context.user_data["is_admin_authenticated"] = True
+        welcome_text = "⚠️ Пароль отключён. Доступ разрешён."
+        await safe_reply(
+            update,
+            context,
+            welcome_text,
+            reply_markup=get_admin_main_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    # Запрашиваем пароль
+    context.user_data["awaiting_admin_password"] = True
     first_time_key = "admin_first_time"
+
     if context.user_data.get(first_time_key) is None:
-        context.user_data[first_time_key] = False  # Уже не первый раз
+        context.user_data[first_time_key] = False  # Больше не первый раз
 
         env_tag = "🟢 <b>PRODUCTION</b>" if not debug_mode else "🟠 <b>DEBUG MODE</b>"
         welcome_text = (
             f"{env_tag}\n"
             "🔐 <b>Админ-панель</b> ✅\n\n"
-            "📌 Добро пожаловать!\n\n"
-            "📋 Воспользуйтесь меню ниже или командами:\n\n"
-            "📘 /adminhelp — подробная справка\n"
-            "🛠️ /me — ваш профиль\n"
-            "🔧 /status — состояние\n"
-            "📊 /stats — статистика\n"
-            "📤 /export — выгрузка заказов\n"
-            "📦 /backup — резервная копия\n"
-            "📝 /listadmins — все админы\n"
-            "🛠️ /addadmin ID — добавить\n"
-            "🗑️ /rmadmin ID — удалить\n"
-            f"🧩 /debug — отладка (вкл: {debug_mode})"
+            "📌 Для доступа введите пароль:"
         )
     else:
-        welcome_text = "🔐 <b>Админ-панель</b> | Готов к работе."
+        welcome_text = "🔐 <b>Админ-панель</b>\n\nВведите пароль для входа."
 
     await safe_reply(
         update,
         context,
         welcome_text,
-        reply_markup=get_admin_main_keyboard(),
         parse_mode="HTML"
     )
+
+
+async def handle_admin_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обрабатывает ввод пароля.
+    Вызывается, если awaiting_admin_password == True.
+    """
+    if not context.user_data.get("awaiting_admin_password"):
+        return
+
+    text = update.effective_message.text.strip()
+    ADMIN_PASSWORD = context.application.bot_data.get("ADMIN_PASSWORD")
+
+    if text == ADMIN_PASSWORD:
+        context.user_data["is_admin_authenticated"] = True
+        context.user_data["awaiting_admin_password"] = False
+        await safe_reply(
+            update,
+            context,
+            "✅ Доступ разрешён.",
+            reply_markup=get_admin_main_keyboard(),
+            parse_mode="HTML"
+        )
+        logger.info(f"🔓 Успешный вход в админку: {update.effective_user.id}")
+    else:
+        await safe_reply(update, context, "❌ Неверный пароль. Попробуйте ещё раз.")
+        logger.warning(f"🔐 Ошибка входа: {update.effective_user.id}")
 
 
 @admin_required
@@ -256,7 +300,7 @@ async def handle_admin_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_keys = {
         'in_admin', 'admin_action', 'issue_step', 'edit_breed', 'cancel_breed',
         'broadcast_text', 'waiting_for_promo_title', 'current_state', 'issue_query',
-        'admin_first_time'  # ← Очистим флаг, если нужно
+        'admin_first_time', 'awaiting_admin_password', 'is_admin_authenticated'
     }
     for key in admin_keys:
         context.user_data.pop(key, None)
@@ -315,6 +359,12 @@ def register_admin_handlers(app: Application):
     )
     app.add_handler(
         MessageHandler(filters.Text([ADMIN_HELP_BUTTON_TEXT]), handle_admin_help),
+        group=1
+    )
+
+    # Обработчик ввода пароля (group=1, после других команд)
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_password),
         group=1
     )
 
