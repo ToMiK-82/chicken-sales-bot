@@ -2,8 +2,8 @@
 🎁 Обработчик 'Акции' — показ активных промоакций.
 Работает по кнопке '🎁 Акции'.
 ✅ Исправлен доступ к sqlite3.Row
-✅ Безопасное извлечение полей
-✅ Отправка фото по одному
+✅ Удалён недопустимый параметр disable_web_page_preview
+✅ Отправка фото по одному — стабильно и безопасно
 """
 
 from telegram import Update
@@ -61,7 +61,8 @@ async def handle_promotions(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             photo=str(image_url).strip(),
                             caption=caption,
                             parse_mode="HTML",
-                            disable_web_page_preview=True,
+                            # ✅ УДАЛЕНО: disable_web_page_preview=True
+                            # ❌ Этот параметр НЕ поддерживается в reply_photo()
                             disable_notification=True
                         )
                         sent_count += 1
