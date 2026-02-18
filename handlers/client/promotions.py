@@ -1,39 +1,29 @@
 """
 🎁 Обработчик 'Акции' — показ активных промоакций.
 Работает по кнопке '🎁 Акции'.
-✅ Удалён HANDLED_KEY — он мешает повторному вызову
+✅ Исправлен доступ к sqlite3.Row
+✅ Безопасное извлечение полей
+✅ Отправка фото по одному
 """
 
-from telegram import Update, InputMediaPhoto
-from telegram.ext import (
-    ContextTypes,
-    ConversationHandler,
-    MessageHandler,
-    CommandHandler,
-    filters,
-)
-
+from telegram import Update
+from telegram.ext import ContextTypes, MessageHandler, filters
 from database.repository import db
-from config.buttons import (
-    PROMOTIONS_BUTTON_TEXT,
-    BTN_BACK_FULL,
-    BTN_CANCEL_FULL,
-    get_main_keyboard,
-    # HANDLED_KEY больше не используется
-)
+from config.buttons import PROMOTIONS_BUTTON_TEXT, get_main_keyboard
 from utils.messaging import safe_reply
 from html import escape
 import logging
 
 logger = logging.getLogger(__name__)
 
-PROMO_VIEW = 0
-promotions_handler = None
 
-
-async def promotions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает активные акции."""
-    # ❌ Убрано: if context.user_data.get(HANDLED_KEY): return
+async def handle_promotions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Показывает клиенту активные акции.
+    Работает с sqlite3.Row напрямую.
+    """
+    if not update.effective_user or not update.effective_message:
+        return
 
     try:
         promotions = await db.get_active_promotions()
@@ -45,106 +35,97 @@ async def promotions_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 reply_markup=get_main_keyboard(),
                 parse_mode="HTML"
             )
-            return ConversationHandler.END  # можно просто END, можно None
+            return
 
-        media = []
-        text_parts = []
+        sent_count = 0
+        failed_count = 0
 
         for promo in promotions:
-            title = escape(promo['title'])
-            desc = escape(promo['description'])
-            image_url = promo['image_url']
-
-            if image_url and image_url.strip():
-                caption = f"🎁 <b>{title}</b>\n\n{desc}"
-                media.append(InputMediaPhoto(media=image_url, caption=caption, parse_mode="HTML"))
-            else:
-                text_parts.append(f"🎁 <b>{title}</b>\n\n{desc}")
-
-        if media:
             try:
-                await update.effective_message.reply_media_group(media=media, disable_notification=True)
-            except Exception as e:
-                logger.error(f"❌ Не удалось отправить media group: {e}")
-                for part in text_parts:
-                    await safe_reply(
-                        update,
-                        context,
-                        part,
-                        parse_mode="HTML",
-                        reply_markup=None
-                    )
+                # ✅ Правильный доступ к sqlite3.Row
+                title = escape(str(promo['title']))
+                desc = escape(str(promo['description']))
+                image_url = promo['image_url']
+                start_date = promo['start_date']
+                end_date = promo['end_date']
 
-        for part in text_parts:
+                # Формируем текст
+                start_str = f"📅 Начало: {start_date}\n" if start_date else ""
+                end_str = f"🔚 Окончание: {end_date}\n" if end_date else "🔚 Окончание: бессрочно\n"
+                caption = f"🎁 <b>{title}</b>\n\n{start_str}{end_str}{desc}"
+
+                # Отправляем фото или текст
+                if image_url and str(image_url).strip():
+                    try:
+                        await update.effective_message.reply_photo(
+                            photo=str(image_url).strip(),
+                            caption=caption,
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                            disable_notification=True
+                        )
+                        sent_count += 1
+                    except Exception as e:
+                        logger.warning(f"🖼️ Не удалось отправить фото для акции '{title}': {e}")
+                        try:
+                            await safe_reply(update, context, caption, parse_mode="HTML", reply_markup=None)
+                            sent_count += 1
+                        except Exception:
+                            failed_count += 1
+                else:
+                    try:
+                        await safe_reply(update, context, caption, parse_mode="HTML", reply_markup=None)
+                        sent_count += 1
+                    except Exception as e:
+                        logger.error(f"❌ Не удалось отправить текст акции '{title}': {e}")
+                        failed_count += 1
+
+            except Exception as e:
+                logger.error(f"❌ Ошибка при обработке акции: {e}", exc_info=True)
+                failed_count += 1
+
+        # Итоговое сообщение
+        if sent_count > 0:
+            summary = "🚀 Следите за новыми предложениями!"
+            if failed_count > 0:
+                summary += f"\n\n⚠️ Не удалось показать {failed_count} элементов."
             await safe_reply(
                 update,
                 context,
-                part,
-                parse_mode="HTML",
-                reply_markup=None
+                summary,
+                reply_markup=get_main_keyboard(),
+                parse_mode="HTML"
+            )
+        else:
+            await safe_reply(
+                update,
+                context,
+                "⚠️ Не удалось загрузить ни одну акцию.",
+                reply_markup=get_main_keyboard(),
+                parse_mode="HTML"
             )
 
-        await safe_reply(
-            update,
-            context,
-            "🚀 Следите за новыми предложениями!",
-            reply_markup=get_main_keyboard(),
-            parse_mode="HTML"
-        )
-
     except Exception as e:
-        logger.error(f"❌ Ошибка при загрузке акций: {e}", exc_info=True)
+        logger.error(f"❌ Критическая ошибка при показе акций: {e}", exc_info=True)
         await safe_reply(
             update,
             context,
-            "⚠️ Ошибка загрузки акций.",
+            "⚠️ Ошибка загрузки акций. Попробуйте позже.",
             reply_markup=get_main_keyboard(),
             parse_mode="HTML"
         )
-
-    # ❌ Убрано: context.user_data[HANDLED_KEY] = True
-    return ConversationHandler.END
-
-
-async def fallback_promotions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Безопасно завершает просмотр акций."""
-    # ❌ Убрано: if context.user_data.get(HANDLED_KEY): return
-
-    await safe_reply(
-        update,
-        context,
-        "🚪 Просмотр акций завершён.",
-        reply_markup=get_main_keyboard(),
-        parse_mode="HTML"
-    )
-    # ❌ Убрано: context.user_data[HANDLED_KEY] = True
-    return ConversationHandler.END
 
 
 def register_promotions_handler(application):
-    global promotions_handler
-
-    promotions_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(
-                filters.ChatType.PRIVATE & filters.Text([PROMOTIONS_BUTTON_TEXT]),
-                promotions_command
-            )
-        ],
-        states={},
-        fallbacks=[
-            CommandHandler("start", fallback_promotions),
-            CommandHandler("cancel", fallback_promotions),
-            MessageHandler(filters.COMMAND, fallback_promotions),
-            MessageHandler(filters.Text([BTN_BACK_FULL, BTN_CANCEL_FULL]), fallback_promotions),
-        ],
-        per_user=True,
-        allow_reentry=True,
-        name="client_promotions_conversation"
+    """Регистрирует обработчик акций."""
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.Text([PROMOTIONS_BUTTON_TEXT]),
+            handle_promotions
+        ),
+        group=1
     )
-
-    application.add_handler(promotions_handler, group=1)
     logger.info(f"✅ Обработчик 'Акции' зарегистрирован: '{PROMOTIONS_BUTTON_TEXT}' (group=1)")
 
 
-__all__ = ["promotions_handler"]
+__all__ = ["handle_promotions"]

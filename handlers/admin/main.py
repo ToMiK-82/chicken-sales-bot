@@ -2,7 +2,7 @@
 Админ-панель: команды, проверка прав, выход.
 ✅ /admin — умное приветствие + запрос пароля
 ✅ Кнопки: Выход, Справка
-✅ Группировка: group=0 — команды, group=1 — кнопки и диалоги
+✅ Группировка: group=0 — команды, group=1 — кнопки, group=2 — fallback (пароль)
 """
 
 from datetime import datetime
@@ -39,31 +39,36 @@ async def start_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Если пользователь ещё не аутентифицирован — запрашивает пароль.
     После ввода правильного пароля показывает меню.
     """
+    if not update or not update.effective_user:
+        logger.warning("❌ update или effective_user отсутствует в start_admin")
+        return
+
     user = update.effective_user
     db = context.application.bot_data["db"]
     debug_mode = context.application.bot_data.get("DEBUG", False)
     ADMIN_PASSWORD = context.application.bot_data.get("ADMIN_PASSWORD")
 
-    # Проверяем, уже ли авторизован
+    if context.user_data is None:
+        context.user_data = {}
+
+    # Уже авторизован?
     if context.user_data.get("is_admin_authenticated"):
-        welcome_text = "🔐 <b>Админ-панель</b> | Готов к работе."
         await safe_reply(
             update,
             context,
-            welcome_text,
+            "🔐 <b>Админ-панель</b> | Готов к работе.",
             reply_markup=get_admin_main_keyboard(),
             parse_mode="HTML"
         )
         return
 
-    # Если пароль не задан — пускаем без проверки (на случай ошибки)
+    # Пароль не задан — пускаем без проверки
     if not ADMIN_PASSWORD:
         context.user_data["is_admin_authenticated"] = True
-        welcome_text = "⚠️ Пароль отключён. Доступ разрешён."
         await safe_reply(
             update,
             context,
-            welcome_text,
+            "⚠️ Пароль отключён. Доступ разрешён.",
             reply_markup=get_admin_main_keyboard(),
             parse_mode="HTML"
         )
@@ -74,8 +79,7 @@ async def start_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_time_key = "admin_first_time"
 
     if context.user_data.get(first_time_key) is None:
-        context.user_data[first_time_key] = False  # Больше не первый раз
-
+        context.user_data[first_time_key] = False
         env_tag = "🟢 <b>PRODUCTION</b>" if not debug_mode else "🟠 <b>DEBUG MODE</b>"
         welcome_text = (
             f"{env_tag}\n"
@@ -85,20 +89,30 @@ async def start_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         welcome_text = "🔐 <b>Админ-панель</b>\n\nВведите пароль для входа."
 
-    await safe_reply(
-        update,
-        context,
-        welcome_text,
-        parse_mode="HTML"
-    )
+    await safe_reply(update, context, welcome_text, parse_mode="HTML")
 
 
 async def handle_admin_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обрабатывает ввод пароля.
-    Вызывается, если awaiting_admin_password == True.
+    ВАЖНО: работает ТОЛЬКО если awaiting_admin_password == True.
+    Не должен мешать другим обработчикам.
+    Регистрируется в group=2, чтобы НЕ перехватывать кнопки.
     """
+    if not update or not update.effective_user:
+        logger.warning("⚠️ Пропуск: update или effective_user отсутствует")
+        return
+
+    user_id = update.effective_user.id
+
+    if context.user_data is None:
+        context.user_data = {}
+
+    # ❌ Если не ждём пароль — передаём дальше (не блокируем)
     if not context.user_data.get("awaiting_admin_password"):
+        return
+
+    if not update.effective_message or not update.effective_message.text:
         return
 
     text = update.effective_message.text.strip()
@@ -114,15 +128,17 @@ async def handle_admin_password(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=get_admin_main_keyboard(),
             parse_mode="HTML"
         )
-        logger.info(f"🔓 Успешный вход в админку: {update.effective_user.id}")
+        logger.info(f"🔓 Успешный вход в админку: {user_id}")
     else:
         await safe_reply(update, context, "❌ Неверный пароль. Попробуйте ещё раз.")
-        logger.warning(f"🔐 Ошибка входа: {update.effective_user.id}")
+        logger.warning(f"🔐 Ошибка входа: {user_id}")
 
 
 @admin_required
 async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Добавляет админа: /addadmin 123456789"""
+    if not update.effective_user:
+        return
     user_id = update.effective_user.id
 
     if not context.args or len(context.args) != 1:
@@ -151,14 +167,13 @@ async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await context.application.bot_data["db"].is_admin(new_admin_id):
-        await safe_reply(update, context, f"✅ Пользователь <code>{new_admin_id}</code> уже админ.")
+        await safe_reply(update, context, f"✅ Пользователь <code>{new_admin_id}</code> уже админ.", parse_mode="HTML")
         return
 
     if not await context.application.bot_data["db"].add_admin(new_admin_id, added_by=user_id):
         await safe_reply(update, context, "❌ Ошибка при добавлении в БД.")
         return
 
-    # Обновляем кэш
     context.application.bot_data["ADMIN_IDS"] = [
         admin[0] for admin in await context.application.bot_data["db"].get_all_admins()
     ]
@@ -187,6 +202,8 @@ async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_required
 async def rmadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Удаляет админа: /rmadmin 123456789"""
+    if not update.effective_user:
+        return
     user_id = update.effective_user.id
 
     if not context.args or len(context.args) != 1:
@@ -232,6 +249,8 @@ async def rmadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_required
 async def listadmins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Список всех админов."""
+    if not update.effective_user:
+        return
     user_id = update.effective_user.id
     logger.info(f"📋 Пользователь {user_id} вызвал /listadmins")
 
@@ -273,6 +292,8 @@ async def listadmins_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 @admin_required
 async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает профиль."""
+    if not update.effective_user:
+        return
     user = update.effective_user
     text = "👤 <b>Ваш профиль</b>\n\n"
     text += f"📛 <b>Имя:</b> {escape(user.full_name)}\n"
@@ -297,6 +318,11 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_required
 async def handle_admin_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выход из панели — очистка состояний."""
+    if not update.effective_user:
+        return
+    if context.user_data is None:
+        context.user_data = {}
+
     admin_keys = {
         'in_admin', 'admin_action', 'issue_step', 'edit_breed', 'cancel_breed',
         'broadcast_text', 'waiting_for_promo_title', 'current_state', 'issue_query',
@@ -316,12 +342,18 @@ async def handle_admin_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_required
 async def handle_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Справка по админ-командам."""
+    if not update.effective_user:
+        return
     await safe_reply(update, context, HELP_TEXT, parse_mode="HTML")
 
 
 # === РЕГИСТРАЦИЯ ВСЕГО ===
 def register_admin_handlers(app: Application):
-    """Регистрирует ВСЕ админ-обработчики."""
+    """
+    Регистрирует все админ-обработчики.
+    ВАЖНО: handle_admin_password — в group=2, чтобы НЕ блокировать клиентские кнопки!
+    """
+    # === Команды: group=0 ===
     app.add_handler(CommandHandler("admin", start_admin), group=0)
     app.add_handler(CommandHandler("adminhelp", admin_help_command), group=0)
     app.add_handler(CommandHandler("me", me_command), group=0)
@@ -352,7 +384,7 @@ def register_admin_handlers(app: Application):
     from .issue_handler import register_admin_issue_handler
     register_admin_issue_handler(app)
 
-    # Кнопки — group=1
+    # === Админ-кнопки: group=1 ===
     app.add_handler(
         MessageHandler(filters.Text([ADMIN_EXIT_BUTTON_TEXT]), handle_admin_exit),
         group=1
@@ -362,10 +394,10 @@ def register_admin_handlers(app: Application):
         group=1
     )
 
-    # Обработчик ввода пароля (group=1, после других команд)
+    # === Обработчик ввода пароля: group=2 — ПОСЛЕ всех клиентских обработчиков ===
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_password),
-        group=1
+        group=2  # ← Ключевое изменение: не мешает клиентам
     )
 
     logger.info("✅ Админ-панель: все команды, диалоги и кнопки зарегистрированы")
