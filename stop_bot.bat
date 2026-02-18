@@ -1,18 +1,18 @@
 @echo off
-:: === Остановка бота chicken-sales-bot ===
+:: === Stop the chicken-sales-bot ===
 set BOT_DIR=F:\bots\chicken-sales-bot
 
-echo [🛑] Останавливаю бота...
+echo [🛑] Stopping the bot...
 
 taskkill /f /im python.exe >nul 2>&1
 
-:: Проверка, остался ли процесс
+:: Check if the process is still running
 timeout /t 2 /nobreak >nul
 wmic process where "name='python.exe' and commandline like '%%chicken-sales-bot%%'" get commandline >nul
 if %errorlevel% equ 0 (
-    echo ⚠️ Бот всё ещё работает. Попробуйте вручную.
+    echo ⚠️ Bot is still running. Try to stop manually.
 ) else (
-    echo ✅ Бот остановлен.
+    echo ✅ Bot stopped successfully.
 )
 
 pause
