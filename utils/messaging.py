@@ -13,38 +13,26 @@
 ✅ Автоочистка last_message_id при ошибках
 ✅ Безопасная работа при context=None (например, при старте)
 ✅ Исправлено: <a href="tel:..."> работает корректно
-✅ Напоминания клиентам за день до поставки (только pending, с записью в user_actions)
+✅ Напоминания клиентам: за 2 и 1 день до поставки (только pending, с записью в user_actions)
 """
 
 import logging
 import asyncio
-import hashlib
-import re
 from datetime import datetime, timedelta
-from typing import Optional, List, Set
+from typing import Optional, Set
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update
 from telegram.ext import ContextTypes
-from telegram.error import NetworkError, BadRequest, Forbidden, TimedOut
-import httpx
+from html import escape
 
 from config.buttons import get_back_only_keyboard
 from database.repository import db
-from html import escape  # Только для экранирования данных, НЕ для HTML-тегов
-
-# ✅ Импортируем safe_reply из нового модуля
 from utils.safe_send import safe_reply
 
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 4096
-MAX_RETRIES = 3
-BASE_RETRY_DELAY = 1.0
-MAX_RETRY_DELAY = 10.0
 COOLDOWN_SECONDS = 60
-
-# 🔍 Регулярное выражение для поиска <a href="tel:...">
-TEL_LINK_PATTERN = re.compile(r'<a[^>]+href\s*=\s*["\'][^"\']*tel:', re.IGNORECASE)
 
 # ✅ Исключения: не блокируются по cooldown
 SKIP_COOLDOWN_PREFIXES: Set[str] = {
@@ -56,17 +44,12 @@ SKIP_COOLDOWN_PREFIXES: Set[str] = {
 
 # Внутренние ключи user_data
 COOLDOWN_KEY_PREFIX = "last_reply_"
-LAST_MESSAGE_KEY = "last_bot_message_id"  # ID последнего отправленного сообщения
+LAST_MESSAGE_KEY = "last_bot_message_id"
 
 
 def log_action(user_id: int, action: str, description: str):
     """Логирует действие пользователя."""
     logger.info(f"[LOG] User {user_id} - {action}: {description}")
-
-
-def _stable_hash(text: str) -> str:
-    """Генерирует стабильный короткий хеш текста на основе SHA-256."""
-    return hashlib.sha256(text.encode()).hexdigest()[:10]
 
 
 # ──────────────────────────────────────────────────────────────
@@ -81,7 +64,10 @@ async def handle_error(update: Optional[Update], context: ContextTypes.DEFAULT_T
     update_id = getattr(update, "update_id", "unknown")
     logger.error(f"❌ Ошибка в обработчике (update_id={update_id}): {context.error}", exc_info=True)
 
-    ignored_errors = (httpx.RequestError, TimeoutError, NetworkError, Forbidden)
+    from httpx import RequestError
+    from telegram.error import TimedOut, NetworkError, Forbidden
+
+    ignored_errors = (RequestError, TimeoutError, TimedOut, NetworkError, Forbidden)
     if isinstance(context.error, ignored_errors):
         err_msg = str(context.error).lower()
         ignored_phrases = ["query is too old", "message is not modified", "retry after"]
@@ -92,7 +78,7 @@ async def handle_error(update: Optional[Update], context: ContextTypes.DEFAULT_T
         target_chat_id = None
         if update and update.effective_chat:
             target_chat_id = update.effective_chat.id
-        elif context and hasattr(context, "job") and context.job:
+        elif context.job:
             target_chat_id = context.job.chat_id
 
         if target_chat_id:
@@ -108,8 +94,7 @@ async def handle_error(update: Optional[Update], context: ContextTypes.DEFAULT_T
         logger.error(f"❌ Не удалось ответить пользователю: {e}")
 
     try:
-        devops_chat_id = getattr(context, "application", None)
-        devops_chat_id = getattr(devops_chat_id, "bot_data", {}).get("DEVOPS_CHAT_ID")
+        devops_chat_id = context.application.bot_data.get("DEVOPS_CHAT_ID")
         if not devops_chat_id:
             return
 
@@ -135,8 +120,7 @@ async def handle_error(update: Optional[Update], context: ContextTypes.DEFAULT_T
 # === ЕЖЕДНЕВНЫЙ ОТЧЁТ ===
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     try:
-        devops_chat_id = getattr(context, "application", None)
-        devops_chat_id = getattr(devops_chat_id, "bot_data", {}).get("DEVOPS_CHAT_ID")
+        devops_chat_id = context.application.bot_data.get("DEVOPS_CHAT_ID")
         if not devops_chat_id:
             logger.warning("🔧 DEVOPS_CHAT_ID не задан — не могу отправить ежедневный отчёт.")
             return
@@ -191,8 +175,7 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
 # === НАПОМИНАНИЕ АДМИНАМ ЗА 2 ДНЯ ===
 async def send_admin_shipment_reminder(context: ContextTypes.DEFAULT_TYPE):
     try:
-        devops_chat_id = getattr(context, "application", None)
-        devops_chat_id = getattr(devops_chat_id, "bot_data", {}).get("DEVOPS_CHAT_ID")
+        devops_chat_id = context.application.bot_data.get("DEVOPS_CHAT_ID")
         if not devops_chat_id:
             return
 
@@ -226,15 +209,13 @@ async def send_admin_shipment_reminder(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка при отправке напоминания админам: {e}", exc_info=True)
 
 
-# === НАПОМИНАНИЕ КЛИЕНТУ ЗА 1 ДЕНЬ ===
-async def send_customer_order_reminder(context: ContextTypes.DEFAULT_TYPE):
+# === НАПОМИНАНИЕ КЛИЕНТУ ЗА 2 ДНЯ ===
+async def send_pending_reminder_2_days(context: ContextTypes.DEFAULT_TYPE):
     """
-    Отправляет напоминание клиентам, у которых на завтра назначен заказ
-    и статус которого 'pending' (не подтверждён).
-    Записывает факт отправки в user_actions.
+    Первое напоминание клиентам с pending-заказами за 2 дня до поставки.
     """
     try:
-        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        two_days_ahead = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
         rows = await db.execute_read(
             """
             SELECT o.id, o.user_id, o.breed, o.quantity, o.price, o.date, o.phone
@@ -243,21 +224,20 @@ async def send_customer_order_reminder(context: ContextTypes.DEFAULT_TYPE):
               AND o.date = ?
               AND o.id NOT IN (
                   SELECT target_id FROM user_actions
-                  WHERE action = 'reminder_sent' AND target_id = o.id
+                  WHERE action = 'reminder_sent_2_days' AND target_id = o.id
               )
             """,
-            (tomorrow,)
+            (two_days_ahead,)
         )
 
         if not rows:
-            logger.info(f"📭 На {tomorrow} нет заказов, требующих напоминания.")
+            logger.info(f"📭 На {two_days_ahead} нет pending-заказов для напоминания (2 дня).")
             return
 
         for order_id, user_id, breed, quantity, price, order_date, phone in rows:
             try:
                 target_user_id = user_id
                 if not target_user_id:
-                    # ✅ Отложенный импорт — разрывает цикл!
                     from utils.notifications import _get_user_id_by_phone
                     target_user_id = await _get_user_id_by_phone(phone)
                 if not target_user_id:
@@ -266,14 +246,13 @@ async def send_customer_order_reminder(context: ContextTypes.DEFAULT_TYPE):
 
                 total = quantity * int(price) if price else 0
                 date_str = datetime.strptime(order_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+
                 message = (
-                    f"⏰ <b>Напоминание о завтрашней поставке!</b>\n\n"
-                    f"🐔 Порода: <b>{breed}</b>\n"
-                    f"📦 Количество: <b>{quantity} шт.</b>\n"
-                    f"💰 Цена: <b>{int(price)} руб.</b> × {quantity} = <b>{total} руб.</b>\n"
-                    f"📅 Поставка: <b>{date_str}</b>\n\n"
-                    f"Пожалуйста, подтвердите или отмените заказ, чтобы мы знали ваше решение.\n"
-                    f"Используйте кнопки ниже или свяжитесь с администратором."
+                    f"📅 <b>Почти готово!</b>\n\n"
+                    f"Через 2 дня ({date_str}) — получение:\n"
+                    f"🐔 <b>{quantity} шт. {breed}</b>\n\n"
+                    f"Пожалуйста, подтвердите, что сможете забрать заказ.\n"
+                    f"Это поможет нам правильно спланировать поставку 🙏"
                 )
 
                 await safe_reply(
@@ -287,15 +266,84 @@ async def send_customer_order_reminder(context: ContextTypes.DEFAULT_TYPE):
 
                 await db.execute_write(
                     "INSERT INTO user_actions (user_id, action, target_id) VALUES (?, ?, ?)",
-                    (target_user_id, 'reminder_sent', order_id)
+                    (target_user_id, 'reminder_sent_2_days', order_id)
                 )
-                logger.info(f"📩 Напоминание для заказа {order_id} отправлено пользователю {target_user_id}")
+                logger.info(f"📨 [2 дня] Напоминание отправлено: заказ {order_id}, user_id {target_user_id}")
 
             except Exception as e:
-                logger.error(f"❌ Не удалось отправить напоминание для заказа {order_id}: {e}")
+                logger.error(f"❌ Не удалось отправить напоминание (2 дня) для заказа {order_id}: {e}")
 
     except Exception as e:
-        logger.error(f"❌ Ошибка при отправке напоминаний клиентам: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка при отправке напоминаний за 2 дня: {e}", exc_info=True)
+
+
+# === НАПОМИНАНИЕ КЛИЕНТУ ЗА 1 ДЕНЬ ===
+async def send_pending_reminder_1_day(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Финальное напоминание клиентам с pending-заказами за 1 день до поставки.
+    """
+    try:
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        rows = await db.execute_read(
+            """
+            SELECT o.id, o.user_id, o.breed, o.quantity, o.price, o.date, o.phone
+            FROM orders o
+            WHERE o.status = 'pending'
+              AND o.date = ?
+              AND o.id NOT IN (
+                  SELECT target_id FROM user_actions
+                  WHERE action = 'reminder_sent_1_day' AND target_id = o.id
+              )
+            """,
+            (tomorrow,)
+        )
+
+        if not rows:
+            logger.info(f"📭 На {tomorrow} нет pending-заказов для финального напоминания.")
+            return
+
+        for order_id, user_id, breed, quantity, price, order_date, phone in rows:
+            try:
+                target_user_id = user_id
+                if not target_user_id:
+                    from utils.notifications import _get_user_id_by_phone
+                    target_user_id = await _get_user_id_by_phone(phone)
+                if not target_user_id:
+                    logger.warning(f"❌ Не найден user_id для заказа {order_id}, телефон {phone}")
+                    continue
+
+                total = quantity * int(price) if price else 0
+                date_str = datetime.strptime(order_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+
+                message = (
+                    f"⏰ <b>Финальное напоминание!</b>\n\n"
+                    f"Завтра ({date_str}) — получение:\n"
+                    f"🐔 <b>{quantity} шт. {breed}</b>\n\n"
+                    f"Если вы <b>не подтвердите</b> сегодня —\n"
+                    f"мы рискуем отдать цыплят другим клиентам 😔\n\n"
+                    f"Подтвердите, пожалуйста, что сможете забрать заказ!"
+                )
+
+                await safe_reply(
+                    update=None,
+                    context=context,
+                    text=message,
+                    chat_id=target_user_id,
+                    disable_cooldown=True,
+                    parse_mode="HTML"
+                )
+
+                await db.execute_write(
+                    "INSERT INTO user_actions (user_id, action, target_id) VALUES (?, ?, ?)",
+                    (target_user_id, 'reminder_sent_1_day', order_id)
+                )
+                logger.info(f"📨 [1 день] Финальное напоминание отправлено: заказ {order_id}, user_id {target_user_id}")
+
+            except Exception as e:
+                logger.error(f"❌ Не удалось отправить финальное напоминание для заказа {order_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке финальных напоминаний: {e}", exc_info=True)
 
 
 __all__ = [
@@ -303,5 +351,6 @@ __all__ = [
     "handle_error",
     "send_daily_report",
     "send_admin_shipment_reminder",
-    "send_customer_order_reminder",
+    "send_pending_reminder_2_days",
+    "send_pending_reminder_1_day",
 ]

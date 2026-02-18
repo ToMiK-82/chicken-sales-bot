@@ -1,5 +1,5 @@
 """
-🚀 Основной файл запуска бота — v4.9.4 (production-ready + test mode + startup fix)
+🚀 Основной файл запуска бота — v4.9.5 (production-ready + test mode + startup fix)
 ✅ Полная поддержка админ-панели
 ✅ Группы обработчиков:
    - group=-1 — автозапуск (первым!)
@@ -31,7 +31,7 @@ from telegram.ext import (
 )
 
 # --- 🚀 Версия бота — ЕДИНСТВЕННОЕ место определения ---
-BOT_VERSION = "v4.9.4"
+BOT_VERSION = "v4.9.5"  # 🔼 Увеличили версию
 
 print("📍 Python executable:", sys.executable)
 try:
@@ -79,7 +79,8 @@ from utils.messaging import (
     safe_reply,
     send_daily_report,
     send_admin_shipment_reminder,
-    send_customer_order_reminder,
+    send_pending_reminder_2_days,
+    send_pending_reminder_1_day,
 )
 from utils.archive import auto_archive_old_stocks
 from utils.reminder_reporter import send_unconfirmed_orders_report
@@ -234,7 +235,8 @@ async def post_init(application: Application):
     job_queue = application.job_queue
     job_queue.run_daily(send_daily_report, time=time(9, 0), name="daily_report")
     job_queue.run_daily(send_admin_shipment_reminder, time=time(10, 0), name="admin_shipment_reminder")
-    job_queue.run_daily(send_customer_order_reminder, time=time(8, 0), name="customer_order_reminder")
+    job_queue.run_daily(send_pending_reminder_2_days, time=time(8, 0), name="reminder_2_days")
+    job_queue.run_daily(send_pending_reminder_1_day, time=time(8, 0), name="reminder_1_day")
     job_queue.run_daily(send_unconfirmed_orders_report, time=time(12, 30), name="unconfirmed_orders_report")
     job_queue.run_daily(auto_archive_old_stocks, time=time(0, 10), name="auto_archive_old_stocks")
     logger.info("✅ Все фоновые задачи запланированы")
@@ -252,7 +254,6 @@ async def post_init(application: Application):
         f"🔧 Состояние: все модули инициализированы\n"
         f"⚙️ Режим: <b>{mode_text}</b>"
     )
-
 
     try:
         await bot.send_message(
