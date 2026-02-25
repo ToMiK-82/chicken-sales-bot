@@ -117,7 +117,7 @@ async def handle_error(update: Optional[Update], context: ContextTypes.DEFAULT_T
         logger.error(f"❌ Ошибка при уведомлении в DevOps: {e}", exc_info=True)
 
 
-# === ЕЖЕДНЕВНЫЙ ОТЧЁТ ===
+# === ЕЖЕДНЕВНЫЙ ОТЧЁТ (исправленный) ===
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     try:
         devops_chat_id = context.application.bot_data.get("DEVOPS_CHAT_ID")
@@ -126,37 +126,41 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
             return
 
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        total_orders = await db.execute_read(
+
+        # 🛒 Все заказы за вчера (любой статус)
+        total_orders_result = await db.execute_read(
             "SELECT COUNT(*) FROM orders WHERE DATE(created_at) = ?", (yesterday,)
         )
-        active_orders = await db.execute_read(
+        total_orders = total_orders_result[0][0] if total_orders_result and total_orders_result[0] else 0
+
+        # 💰 Выручка за день — все заказы, созданные вчера, с ценой
+        revenue_result = await db.execute_read(
+            "SELECT SUM(quantity * price) FROM orders WHERE DATE(created_at) = ?", (yesterday,)
+        )
+        new_revenue = int(revenue_result[0][0] or 0)
+
+        # 📦 Активные заказы (на любой дате)
+        active_result = await db.execute_read(
             "SELECT COUNT(*), SUM(quantity * price) FROM orders WHERE status = 'active'"
         )
-        new_orders = await db.execute_read(
-            "SELECT SUM(quantity * price) FROM orders WHERE status = 'active' AND DATE(created_at) = ?",
-            (yesterday,)
-        )
-        upcoming = await db.execute_read(
+        active_count = active_result[0][0] if active_result and active_result[0] else 0
+        active_revenue = int(active_result[0][1] or 0)
+
+        # 📅 Поставки в ближайшие 7 дней
+        upcoming_result = await db.execute_read(
             "SELECT COUNT(*), SUM(available_quantity) FROM stocks WHERE status = 'active' AND date >= DATE('now') AND date <= DATE('now', '+7 days')"
         )
-
-        stats = {
-            "total_orders": total_orders[0][0] if total_orders and total_orders[0] else 0,
-            "active_count": active_orders[0][0] if active_orders and active_orders[0] else 0,
-            "active_revenue": int(active_orders[0][1] or 0),
-            "new_revenue": int(new_orders[0][0] or 0),
-            "upcoming_shipments": upcoming[0][0] if upcoming and upcoming[0] else 0,
-            "upcoming_chicks": upcoming[0][1] or 0,
-        }
+        upcoming_shipments = upcoming_result[0][0] if upcoming_result and upcoming_result[0] else 0
+        upcoming_chicks = upcoming_result[0][1] or 0
 
         report = (
             "📈 <b>Ежедневный отчёт</b>\n"
             f"📆 Дата: <code>{yesterday}</code>\n"
-            f"🛒 <b>Новых заказов:</b> {stats['total_orders']}\n"
-            f"💰 <b>Выручка за день:</b> {stats['new_revenue']} руб.\n"
-            f"📦 <b>Активных заказов:</b> {stats['active_count']} на {stats['active_revenue']} руб.\n"
-            f"📅 <b>Поставок в ближайшие 7 дней:</b> {stats['upcoming_shipments']}\n"
-            f"🐥 <b>Всего цыплят:</b> {stats['upcoming_chicks']}\n"
+            f"🛒 <b>Новых заказов:</b> {total_orders}\n"
+            f"💰 <b>Выручка за день:</b> {new_revenue} руб.\n"
+            f"📦 <b>Активных заказов:</b> {active_count} на {active_revenue} руб.\n"
+            f"📅 <b>Поставок в ближайшие 7 дней:</b> {upcoming_shipments}\n"
+            f"🐥 <b>Всего цыплят:</b> {upcoming_chicks}\n"
             f"✅ <b>Статус:</b> Готов"
         )
 

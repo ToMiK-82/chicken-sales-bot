@@ -168,21 +168,18 @@ async def force_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Инициализация при запуске ---
 async def post_init(application: Application):
     from config.buttons import get_main_keyboard
-    from database.repository import init_db, db  # ✅ Уже есть
+    from database.repository import init_db  # Убрали `db` — будем получать из init_db()
 
     logger.info("🔄 Начало инициализации post_init...")
 
     # === 1. Инициализация базы данных ===
     try:
-        await init_db()
-        logger.info("✅ База данных инициализирована")
+        db = await init_db()  # ← Получаем экземпляр из функции
+        application.bot_data["db"] = db
+        logger.info("✅ База данных инициализирована и сохранена в bot_data['db']")
     except Exception as e:
         logger.critical(f"❌ Ошибка инициализации БД: {e}", exc_info=True)
         raise
-
-    # === Сохраняем экземпляр БД в bot_data ===
-    application.bot_data["db"] = db
-    logger.info("✅ Экземпляр db сохранён в bot_data['db']")
 
     # === 2. Создание папки экспорта ===
     os.makedirs("exports", exist_ok=True)
@@ -233,13 +230,26 @@ async def post_init(application: Application):
 
     # === 8. Планирование фоновых задач ===
     job_queue = application.job_queue
-    job_queue.run_daily(send_daily_report, time=time(9, 0), name="daily_report")
-    job_queue.run_daily(send_admin_shipment_reminder, time=time(10, 0), name="admin_shipment_reminder")
-    job_queue.run_daily(send_pending_reminder_2_days, time=time(8, 0), name="reminder_2_days")
-    job_queue.run_daily(send_pending_reminder_1_day, time=time(8, 0), name="reminder_1_day")
-    job_queue.run_daily(send_unconfirmed_orders_report, time=time(12, 30), name="unconfirmed_orders_report")
-    job_queue.run_daily(auto_archive_old_stocks, time=time(0, 10), name="auto_archive_old_stocks")
-    logger.info("✅ Все фоновые задачи запланированы")
+
+    def schedule_job(job_name: str, callback, job_time: time):
+        try:
+            existing_jobs = job_queue.jobs()  # ✅ Правильный способ в PTB v22.5
+            existing_names = [job.name for job in existing_jobs]
+            if job_name in existing_names:
+                logger.debug(f"⚠️ Задача '{job_name}' уже существует — пропущено")
+                return
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось проверить существующие задачи: {e}")
+
+        job_queue.run_daily(callback, time=job_time, name=job_name)
+        logger.info(f"✅ Задача '{job_name}' запланирована")
+
+    schedule_job("daily_report", send_daily_report, time(9, 0))
+    schedule_job("admin_shipment_reminder", send_admin_shipment_reminder, time(10, 0))
+    schedule_job("reminder_2_days", send_pending_reminder_2_days, time(8, 0))
+    schedule_job("reminder_1_day", send_pending_reminder_1_day, time(8, 0))
+    schedule_job("unconfirmed_orders_report", send_unconfirmed_orders_report, time(12, 30))
+    schedule_job("auto_archive_old_stocks", auto_archive_old_stocks, time(0, 10))
 
     # === 9. Уведомление в DevOps ===
     bot = application.bot
@@ -284,26 +294,6 @@ async def post_init(application: Application):
     logger.info("✅ Готов к работе. Никаких автоматических сообщений не отправлено.")
 
 
-# --- Безопасная отправка приветствия ---
-async def safe_send_welcome(application: Application, user_id: int):
-    try:
-        from config.buttons import get_main_keyboard
-        text = (
-            "👋 Добро пожаловать!\n\n"
-            "Мы осуществляем продажу суточных цыплят сельскохозяйственных пород.\n"
-            "Выберите нужный раздел 👇"
-        )
-        await application.bot.send_message(
-            chat_id=user_id,
-            text=text,
-            reply_markup=get_main_keyboard(),
-            parse_mode="HTML"
-        )
-        logger.info(f"✅ Отправлено приветственное сообщение пользователю {user_id}")
-    except Exception as e:
-        logger.error(f"❌ Не удалось отправить сообщение пользователю {user_id}: {e}")
-
-
 # --- Завершение работы ---
 async def post_shutdown(application: Application):
     try:
@@ -324,7 +314,10 @@ def register_handlers(application: Application):
         from handlers.startup import register_auto_start_handler
         logger.debug("📌 Регистрация auto_start_handler (должна быть первой!)")
         register_auto_start_handler(application)
-        logger.info("✅ Автоматический /start активирован (group=-1)")
+        if DEBUG:
+            logger.info("✅ Автоматический /start активирован (group=-1)")
+        else:
+            logger.debug("✅ Автоматический /start активирован")
     except Exception as e:
         logger.error(f"❌ Ошибка при регистрации автозапуска: {e}", exc_info=True)
 
@@ -332,7 +325,10 @@ def register_handlers(application: Application):
     try:
         from handlers.admin.main import register_admin_handlers
         register_admin_handlers(application)
-        logger.info("✅ Админ-панель (/admin, /me и др.) зарегистрирована (group=0)")
+        if DEBUG:
+            logger.info("✅ Админ-панель (/admin, /me и др.) зарегистрирована (group=0)")
+        else:
+            logger.debug("✅ Админ-панель зарегистрирована")
     except Exception as e:
         logger.critical(f"🔴 Ошибка при регистрации админ-панели: {e}", exc_info=True)
         raise
@@ -351,7 +347,10 @@ def register_handlers(application: Application):
         try:
             handler = getattr(__import__(f"handlers.client.{module}", fromlist=[""]), f"register_{module}_handler")
             handler(application)
-            logger.info(f"✅ Обработчик '{name}' зарегистрирован (group=1)")
+            if DEBUG:
+                logger.info(f"✅ Обработчик '{name}' зарегистрирован (group=1)")
+            else:
+                logger.debug(f"✅ Обработчик '{name}' зарегистрирован")
         except Exception as e:
             logger.error(f"❌ Ошибка при регистрации '{name}': {e}", exc_info=True)
 
@@ -359,7 +358,10 @@ def register_handlers(application: Application):
     try:
         from handlers.admin.issue_handler import register_admin_issue_handler
         register_admin_issue_handler(application)
-        logger.info("✅ Обработчик 'Выдача' зарегистрирован (group=2)")
+        if DEBUG:
+            logger.info("✅ Обработчик 'Выдача' зарегистрирован (group=2)")
+        else:
+            logger.debug("✅ Обработчик 'Выдача' зарегистрирован")
     except Exception as e:
         logger.error(f"❌ Ошибка при регистрации 'Выдача': {e}", exc_info=True)
 
@@ -367,8 +369,11 @@ def register_handlers(application: Application):
     application.add_handler(CommandHandler("status", status_command), group=3)
     if DEBUG:
         application.add_handler(CommandHandler("debug", debug_command), group=3)
-    application.add_handler(CommandHandler("forcestart", force_start), group=3)
-    logger.info("🔧 Системные команды (/status, /debug, /forcestart) зарегистрированы (group=3)")
+        application.add_handler(CommandHandler("forcestart", force_start), group=3)
+        logger.info("🔧 Системные команды (/status, /debug, /forcestart) зарегистрированы (group=3)")
+    else:
+        application.add_handler(CommandHandler("forcestart", force_start), group=3)
+        logger.debug("🔧 Системные команды зарегистрированы")
 
     # === 6. Админ-утилиты ===
     try:
@@ -412,6 +417,16 @@ def register_handlers(application: Application):
         logger.info("✅ Команда /getib зарегистрирована — для диагностики 1С")
     except Exception as e:
         logger.error(f"❌ Ошибка при регистрации /getib: {e}", exc_info=True)
+
+    # === 7. Отладочная команда /report (только в DEBUG) ===
+    async def debug_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """🔧 Вручную запустить ежедневный отчёт"""
+        await send_daily_report(context)
+        await update.message.reply_text("📤 Отчёт отправлен в DevOps", disable_notification=True)
+
+    if DEBUG:
+        application.add_handler(CommandHandler("report", debug_report), group=3)
+        logger.info("🔧 Команда /report доступна (DEBUG)")
 
 
 # --- Запуск ---
@@ -498,3 +513,6 @@ if __name__ == "__main__":
     if os.name == 'nt':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     main()
+
+
+__all__ = ["BOT_VERSION", "main"]

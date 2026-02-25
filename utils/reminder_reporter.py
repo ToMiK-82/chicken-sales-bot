@@ -28,10 +28,8 @@ REPORT_SEND_TIME = "15:30"
 
 async def send_unconfirmed_orders_report(context):
     """
-    Отправляет отчёт: кто не подтвердил заказ до 15:00.
-    Содержит:
-    - HTML-список с ссылками в Telegram
-    - Excel-файл с деталями
+    Отправляет отчёт: кто получил хотя бы одно напоминание (за 2 или 1 день),
+    но НЕ подтвердил заказ до 15:00.
     """
     try:
         devops_chat_id = context.application.bot_data.get("DEVOPS_CHAT_ID")
@@ -42,7 +40,7 @@ async def send_unconfirmed_orders_report(context):
         # Завтрашняя дата
         tomorrow_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # SQL: активные заказы на завтра
+        # SQL: активные заказы на завтра, кому отправляли напоминание (любое), но не подтвердили
         query = """
         SELECT 
             o.id AS order_id,
@@ -61,11 +59,26 @@ async def send_unconfirmed_orders_report(context):
         WHERE o.status = 'active'
           AND o.date = ?
           AND o.created_at >= datetime('now', '-2 days')
-          AND o.id NOT IN (
-              SELECT target_id 
-              FROM user_actions 
-              WHERE action = 'confirmed_order' 
-                AND target_id = o.id
+          AND (
+              -- Кому отправляли напоминание за 2 дня
+              EXISTS (
+                  SELECT 1 FROM user_actions ua1
+                  WHERE ua1.action = 'reminder_sent_2_days'
+                    AND ua1.target_id = o.id
+              )
+              OR
+              -- Или за 1 день
+              EXISTS (
+                  SELECT 1 FROM user_actions ua2
+                  WHERE ua2.action = 'reminder_sent_1_day'
+                    AND ua2.target_id = o.id
+              )
+          )
+          AND NOT EXISTS (
+              -- Кто НЕ подтвердил
+              SELECT 1 FROM user_actions ua3
+              WHERE ua3.action = 'confirmed_order'
+                AND ua3.target_id = o.id
           )
         ORDER BY o.created_at DESC
         """
@@ -73,18 +86,17 @@ async def send_unconfirmed_orders_report(context):
         result = await db.execute_read(query, (tomorrow_date,))
 
         if not result:
-            logger.info("✅ Все заказы на завтра подтверждены.")
-            # Отправляем уведомление
+            logger.info("✅ Все заказы, кому отправляли напоминания, подтверждены.")
             await context.bot.send_message(
                 chat_id=devops_chat_id,
-                text="🟢 <b>Все заказы на завтра подтверждены!</b> 🎉\nНикто не требует обзвона.",
+                text="🟢 <b>Все заказы, кому отправляли напоминания, подтверждены!</b> 🎉\nНикто не требует обзвона.",
                 parse_mode=ParseMode.HTML,
                 disable_notification=False,
-                disable_web_page_preview=True  # ✅ Без превью
+                disable_web_page_preview=True
             )
             return
 
-        # Формируем HTML-сообщение
+        # Формируем HTML-сообщение (остаётся как есть)
         message_lines = [
             f"📞 <b>Нужно подтвердить заказы!</b>\n"
             f"❗️Крайнее время: <b>до {CONFIRMATION_DEADLINE}</b>\n"
@@ -122,7 +134,7 @@ async def send_unconfirmed_orders_report(context):
 
         message = "\n".join(message_lines)
 
-        # Отправка сообщения
+        # Отправка сообщения (разбивка, если длинное)
         if len(message) > 4096:
             await safe_reply(None, context, "📞 Отчёт слишком большой — отправляю частями.")
             for i in range(0, len(message_lines), 6):
@@ -132,7 +144,7 @@ async def send_unconfirmed_orders_report(context):
                     text=part,
                     parse_mode=ParseMode.HTML,
                     disable_notification=False,
-                    disable_web_page_preview=True  # ✅ Без превью
+                    disable_web_page_preview=True
                 )
         else:
             await context.bot.send_message(
@@ -140,15 +152,15 @@ async def send_unconfirmed_orders_report(context):
                 text=message,
                 parse_mode=ParseMode.HTML,
                 disable_notification=False,
-                disable_web_page_preview=True  # ✅ Без превью
+                disable_web_page_preview=True
             )
 
-        # Создание Excel
+        # Создание Excel (остаётся как есть)
         df_data = []
         for row in result:
             df_data.append({
                 "ID заказа": row[6],  # stock_id
-                "Цыплята": row[2],   # breed
+                "Цыплята": row[2],
                 "Кол-во": row[3],
                 "Цена": float(row[4]),
                 "Итого": int(row[3]) * int(float(row[4])),
