@@ -1,4 +1,3 @@
-# utils/reminder_reporter.py
 """
 Модуль для формирования и отправки отчёта админам:
 «Кто не подтвердил заказ после напоминания»
@@ -30,6 +29,9 @@ async def send_unconfirmed_orders_report(context):
     """
     Отправляет отчёт: кто получил хотя бы одно напоминание (за 2 или 1 день),
     но НЕ подтвердил заказ до 15:00.
+
+    ✅ Не отправляет "всё подтверждено", если напоминания не рассылались.
+    ✅ Проверяет: есть ли заказы на завтра и были ли напоминания сегодня.
     """
     try:
         devops_chat_id = context.application.bot_data.get("DEVOPS_CHAT_ID")
@@ -40,50 +42,77 @@ async def send_unconfirmed_orders_report(context):
         # Завтрашняя дата
         tomorrow_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # SQL: активные заказы на завтра, кому отправляли напоминание (любое), но не подтвердили
-        query = """
-        SELECT 
-            o.id AS order_id,
-            o.user_id,
-            o.breed,
-            o.quantity,
-            o.price,
-            o.date AS delivery_date,
-            o.stock_id,
-            u.full_name,
-            u.username,
-            u.phone,
-            o.created_at
-        FROM orders o
-        LEFT JOIN users u ON o.user_id = u.user_id
-        WHERE o.status = 'active'
-          AND o.date = ?
-          AND o.created_at >= datetime('now', '-2 days')
-          AND (
-              -- Кому отправляли напоминание за 2 дня
-              EXISTS (
-                  SELECT 1 FROM user_actions ua1
-                  WHERE ua1.action = 'reminder_sent_2_days'
-                    AND ua1.target_id = o.id
+        # 1️⃣ Проверяем: есть ли активные заказы на завтра?
+        active_orders_query = """
+            SELECT COUNT(*) FROM orders
+            WHERE status = 'active'
+              AND date = ?
+        """
+        active_result = await db.execute_read(active_orders_query, (tomorrow_date,))
+        active_count = active_result[0][0] if active_result and active_result[0] else 0
+
+        if active_count == 0:
+            logger.info("📭 Нет активных заказов на завтра — отчёт не требуется.")
+            # Можно раскомментировать, если хочешь видеть это в чате
+            # await context.bot.send_message(
+            #     chat_id=devops_chat_id,
+            #     text="🟡 Нет заказов на завтра — напоминания не отправлялись.",
+            #     parse_mode=ParseMode.HTML,
+            #     disable_notification=True,
+            #     disable_web_page_preview=True
+            # )
+            return
+
+        # 2️⃣ Проверяем: кому сегодня отправляли напоминания?
+        reminder_check_query = """
+            SELECT DISTINCT target_id FROM user_actions
+            WHERE action IN ('reminder_sent_2_days', 'reminder_sent_1_day')
+              AND DATE(created_at) = DATE('now')
+        """
+        reminded_orders = await db.execute_read(reminder_check_query)
+        reminded_order_ids = {row[0] for row in reminded_orders} if reminded_orders else set()
+
+        if not reminded_order_ids:
+            logger.info("📭 Напоминания сегодня не отправлялись — отчёт пропущен.")
+            # Можно уведомить (по желанию)
+            # await context.bot.send_message(
+            #     chat_id=devops_chat_id,
+            #     text="🟡 Напоминания не отправлялись — возможно, нет поставок или бот не запускался.",
+            #     parse_mode=ParseMode.HTML,
+            #     disable_notification=True,
+            #     disable_web_page_preview=True
+            # )
+            return
+
+        # 3️⃣ Основной запрос: кто получил напоминание, но не подтвердил
+        placeholders = ','.join('?' * len(reminded_order_ids))
+        query = f"""
+            SELECT 
+                o.id AS order_id,
+                o.user_id,
+                o.breed,
+                o.quantity,
+                o.price,
+                o.date AS delivery_date,
+                o.stock_id,
+                u.full_name,
+                u.username,
+                u.phone,
+                o.created_at
+            FROM orders o
+            LEFT JOIN users u ON o.user_id = u.user_id
+            WHERE o.status = 'active'
+              AND o.date = ?
+              AND o.id IN ({placeholders})
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_actions ua
+                  WHERE ua.action = 'confirmed_order'
+                    AND ua.target_id = o.id
               )
-              OR
-              -- Или за 1 день
-              EXISTS (
-                  SELECT 1 FROM user_actions ua2
-                  WHERE ua2.action = 'reminder_sent_1_day'
-                    AND ua2.target_id = o.id
-              )
-          )
-          AND NOT EXISTS (
-              -- Кто НЕ подтвердил
-              SELECT 1 FROM user_actions ua3
-              WHERE ua3.action = 'confirmed_order'
-                AND ua3.target_id = o.id
-          )
-        ORDER BY o.created_at DESC
+            ORDER BY o.created_at DESC
         """
 
-        result = await db.execute_read(query, (tomorrow_date,))
+        result = await db.execute_read(query, (tomorrow_date, *reminded_order_ids))
 
         if not result:
             logger.info("✅ Все заказы, кому отправляли напоминания, подтверждены.")
@@ -96,7 +125,7 @@ async def send_unconfirmed_orders_report(context):
             )
             return
 
-        # Формируем HTML-сообщение (остаётся как есть)
+        # === Формируем HTML-сообщение ===
         message_lines = [
             f"📞 <b>Нужно подтвердить заказы!</b>\n"
             f"❗️Крайнее время: <b>до {CONFIRMATION_DEADLINE}</b>\n"
@@ -134,7 +163,7 @@ async def send_unconfirmed_orders_report(context):
 
         message = "\n".join(message_lines)
 
-        # Отправка сообщения (разбивка, если длинное)
+        # === Отправка сообщения (с разбивкой, если длинное) ===
         if len(message) > 4096:
             await safe_reply(None, context, "📞 Отчёт слишком большой — отправляю частями.")
             for i in range(0, len(message_lines), 6):
@@ -155,7 +184,7 @@ async def send_unconfirmed_orders_report(context):
                 disable_web_page_preview=True
             )
 
-        # Создание Excel (остаётся как есть)
+        # === Создание Excel ===
         df_data = []
         for row in result:
             df_data.append({
@@ -179,7 +208,7 @@ async def send_unconfirmed_orders_report(context):
 
         excel_buffer.seek(0)
 
-        # Отправка файла
+        # === Отправка файла ===
         await context.bot.send_document(
             chat_id=devops_chat_id,
             document=excel_buffer,
