@@ -1,10 +1,13 @@
 """
 Обработчики просмотра и управления заказами администратором.
+
 ✅ ВСЕ исправления:
 - ✅ trust_phone() при ручном подтверждении
 - ✅ Проверка user_id из заказа
 - ✅ Уведомление клиента
 - ✅ Клиент может потом заказывать >50 шт
+- ✅ Исправлен вход: кнопка "📋 Все заказы" теперь всегда работает
+- ✅ Кнопка 'Назад' ведёт на шаг назад, а не сразу в меню
 """
 
 from telegram import Update, ReplyKeyboardMarkup
@@ -14,18 +17,19 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
 from config.buttons import (
     SEPARATOR,
     # --- FULL-кнопки ---
     ADMIN_ORDERS_BUTTON_TEXT,
     BTN_BACK_FULL,
     BTN_CANCEL_FULL,
-    BTN_EDIT_FULL,
     BTN_CONFIRM_FULL,
     BTN_BREED_FULL,
     BTN_INCUBATOR_FULL,
     BTN_DELIVERY_DATE_FULL,
     BTN_EDIT_QUANTITY_FULL,
+    BTN_EDIT_ORDER_FULL,
     # --- Клавиатуры ---
     get_back_only_keyboard,
     get_confirmation_keyboard,
@@ -42,7 +46,11 @@ logger = logging.getLogger(__name__)
 
 # === Ключи для очистки при выходе ===
 ORDER_KEYS_TO_CLEAR = [
-    "client_phone", "edit_order_id", "edit_field", "edit_new_value", "edit_old_value"
+    "client_phone",
+    "edit_order_id",
+    "edit_field",
+    "edit_new_value",
+    "edit_old_value"
 ]
 
 # === Состояния ===
@@ -54,7 +62,6 @@ WAITING_EDIT_FIELD = "WAITING_EDIT_FIELD"
 WAITING_EDIT_VALUE = "WAITING_EDIT_VALUE"
 CONFIRM_EDIT_FINAL = "CONFIRM_EDIT_FINAL"
 CONFIRM_MANUAL_APPROVE = "CONFIRM_MANUAL_APPROVE"
-
 
 # === Вспомогательные функции ===
 def format_status(status: str) -> str:
@@ -68,11 +75,20 @@ def format_status(status: str) -> str:
 
 # === Вход: "📋 Все заказы" ===
 async def handle_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    message_text = update.effective_message.text.strip()
+
+    logger.info(f"📋 [handle_orders] Админ {user_id} открыл 'Все заказы'")
+    logger.info(f"💬 Получено: '{message_text}'")
+    logger.debug(f"📊 context.user_data перед входом: {context.user_data}")
+
     if not await check_admin(update, context):
-        logger.warning(f"❌ Доступ запрещён: {update.effective_user.id}")
+        logger.warning(f"❌ Доступ запрещён: {user_id}")
         return await exit_to_admin_menu(update, context, "❌ Доступ запрещён.")
-    
-    logger.info(f"👤 Админ {update.effective_user.id} открыл 'Все заказы'")
+
+    context.user_data["current_conversation"] = "view_orders"
+    logger.info("🔄 Установлено: current_conversation='view_orders'")
+
     await safe_reply(
         update,
         context,
@@ -84,9 +100,14 @@ async def handle_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Ввод последних цифр номера ===
 async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     text = update.effective_message.text.strip()
 
+    logger.info(f"📞 [handle_phone_input] Ввод номера: '{text}'")
+    logger.debug(f"📊 Текущее состояние: {context.user_data}")
+
     if text == BTN_BACK_FULL:
+        logger.info("🔙 Переход в главное меню (отмена поиска)")
         return await exit_to_admin_menu(update, context, "Поиск отменён.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
 
     if not text.isdigit() or len(text) < 4:
@@ -99,7 +120,6 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return WAITING_FOR_PHONE
 
     last_digits = text[-10:]
-
     try:
         client_rows = await db.execute_read(
             "SELECT DISTINCT phone FROM orders WHERE phone LIKE ?",
@@ -107,6 +127,7 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
         if not client_rows:
+            logger.warning(f"👤 Не найдено клиентов с окончанием ...{last_digits}")
             return await exit_to_admin_menu(
                 update,
                 context,
@@ -116,16 +137,15 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
 
         phones = [row["phone"] for row in client_rows]
+        logger.info(f"✅ Найдено {len(phones)} клиентов с окончанием ...{last_digits}")
 
         if len(phones) == 1:
             phone = phones[0]
             context.user_data["client_phone"] = phone
 
             orders = await db.execute_read(
-                """
-                SELECT id, breed, incubator, date, quantity, price, phone, status, created_at, user_id
-                FROM orders WHERE phone = ? ORDER BY created_at DESC
-                """,
+                """ SELECT id, breed, incubator, date, quantity, price, phone, status, created_at, user_id
+                    FROM orders WHERE phone = ? ORDER BY created_at DESC """,
                 (phone,)
             )
 
@@ -146,7 +166,6 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     total = qty * price
                 except (TypeError, ValueError):
                     total = "—"
-
                 message += (
                     f"🔢 <b>Номер:</b> {order['id']}\n"
                     f"🐔 <b>Порода:</b> {escape(order['breed'])}\n"
@@ -162,9 +181,13 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 )
 
             keyboard = [
-                [BTN_CANCEL_FULL, BTN_EDIT_FULL],
+                [BTN_CANCEL_FULL, BTN_EDIT_ORDER_FULL],
                 [BTN_CONFIRM_FULL, BTN_BACK_FULL],
             ]
+
+            logger.info("⌨️ Отправлена клавиатура с действиями над заказами")
+            logger.debug(f"🔑 Кнопки: {keyboard}")
+
             await safe_reply(
                 update,
                 context,
@@ -172,6 +195,9 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
                 parse_mode="HTML"
             )
+
+            context.user_data["HANDLED"] = True
+            logger.info("✅ HANDLED = True после отправки меню действий")
             return WAITING_ORDER_ACTION
 
         else:
@@ -198,8 +224,11 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # === Выбор действия ===
 async def handle_order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
+    logger.info(f"⚙️ [handle_order_action] Выбор действия: '{text}'")
+    logger.debug(f"📊 context.user_data: {context.user_data}")
 
     if text == BTN_BACK_FULL:
+        logger.info("🔙 Возврат в главное меню")
         return await exit_to_admin_menu(update, context, "Действие отменено.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
 
     if text == BTN_CANCEL_FULL:
@@ -209,9 +238,11 @@ async def handle_order_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             "⚠️ Введите ID заказа для отмены:",
             reply_markup=get_back_only_keyboard()
         )
+        logger.info("➡️ Переход к CONFIRM_CANCEL")
         return CONFIRM_CANCEL
 
-    if text == BTN_EDIT_FULL:
+    elif text == BTN_EDIT_ORDER_FULL:
+        logger.info("🔧 Переход к редактированию заказа")
         await safe_reply(
             update,
             context,
@@ -220,7 +251,8 @@ async def handle_order_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return CONFIRM_EDIT
 
-    if text == BTN_CONFIRM_FULL:
+    elif text == BTN_CONFIRM_FULL:
+        logger.info("✅ Переход к ручному подтверждению")
         await safe_reply(
             update,
             context,
@@ -230,7 +262,7 @@ async def handle_order_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         return CONFIRM_MANUAL_APPROVE
 
     keyboard = [
-        [BTN_CANCEL_FULL, BTN_EDIT_FULL],
+        [BTN_CANCEL_FULL, BTN_EDIT_ORDER_FULL],
         [BTN_CONFIRM_FULL, BTN_BACK_FULL],
     ]
     await safe_reply(
@@ -246,9 +278,21 @@ async def handle_order_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 # === Подтверждение отмены ===
 async def confirm_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
+    logger.info(f"🚫 [confirm_cancel_order] Ввод ID для отмены: '{text}'")
 
     if text == BTN_BACK_FULL:
-        return await handle_order_action(update, context)
+        keyboard = [
+            [BTN_CANCEL_FULL, BTN_EDIT_ORDER_FULL],
+            [BTN_CONFIRM_FULL, BTN_BACK_FULL],
+        ]
+        await safe_reply(
+            update,
+            context,
+            "📞 Выберите действие с заказом:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+            parse_mode="HTML"
+        )
+        return WAITING_ORDER_ACTION
 
     if not text.isdigit():
         await safe_reply(
@@ -264,8 +308,10 @@ async def confirm_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if success:
         msg = f"🚫 Заказ №<b>{order_id}</b> отменён."
+        logger.info(f"✅ Заказ {order_id} успешно отменён")
     else:
         msg = "❌ Не удалось отменить (уже выдан)."
+        logger.warning(f"❌ Не удалось отменить заказ {order_id}")
 
     return await exit_to_admin_menu(update, context, msg, keys_to_clear=ORDER_KEYS_TO_CLEAR, parse_mode="HTML")
 
@@ -273,9 +319,21 @@ async def confirm_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYP
 # === Подтверждение редактирования → выбор поля ===
 async def confirm_edit_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
+    logger.info(f"✏️ [confirm_edit_order] Ввод ID для редактирования: '{text}'")
 
     if text == BTN_BACK_FULL:
-        return await handle_order_action(update, context)
+        keyboard = [
+            [BTN_CANCEL_FULL, BTN_EDIT_ORDER_FULL],
+            [BTN_CONFIRM_FULL, BTN_BACK_FULL],
+        ]
+        await safe_reply(
+            update,
+            context,
+            "📞 Выберите действие с заказом:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+            parse_mode="HTML"
+        )
+        return WAITING_ORDER_ACTION
 
     if not text.isdigit():
         await safe_reply(
@@ -288,36 +346,41 @@ async def confirm_edit_order(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     order_id = int(text)
     phone = context.user_data.get("client_phone")
-
     order = await db.execute_read(
         "SELECT id, breed, incubator, date, quantity, status FROM orders WHERE id = ? AND phone = ?",
         (order_id, phone)
     )
 
     if not order:
-        return await exit_to_admin_menu(
+        logger.warning(f"❌ Заказ {order_id} не найден или не принадлежит клиенту {phone}")
+        await safe_reply(
             update,
             context,
             "❌ Заказ не найден или не принадлежит клиенту.",
-            keys_to_clear=ORDER_KEYS_TO_CLEAR
+            reply_markup=get_back_only_keyboard()
         )
+        return CONFIRM_EDIT
 
     order_data = order[0]
     if order_data["status"] != "active":
-        return await exit_to_admin_menu(
+        logger.warning(f"❌ Нельзя изменить заказ {order_id}: статус={order_data['status']}")
+        await safe_reply(
             update,
             context,
             f"❌ Нельзя изменить: статус — <b>{format_status(order_data['status'])}</b>.",
-            keys_to_clear=ORDER_KEYS_TO_CLEAR,
+            reply_markup=get_back_only_keyboard(),
             parse_mode="HTML"
         )
+        return CONFIRM_EDIT
 
     context.user_data["edit_order_id"] = order_id
+    logger.info(f"✅ Редактирование заказа {order_id} начато")
 
     keyboard = [
         [BTN_BREED_FULL, BTN_EDIT_QUANTITY_FULL],
         [BTN_INCUBATOR_FULL, BTN_DELIVERY_DATE_FULL],
     ]
+
     await safe_reply(
         update,
         context,
@@ -331,9 +394,16 @@ async def confirm_edit_order(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # === Выбор поля ===
 async def waiting_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
+    logger.info(f"🛠️ [waiting_edit_field] Выбор поля: '{text}'")
 
     if text == BTN_BACK_FULL:
-        return await handle_order_action(update, context)
+        await safe_reply(
+            update,
+            context,
+            "✏️ Введите ID заказа для изменения:",
+            reply_markup=get_back_only_keyboard()
+        )
+        return CONFIRM_EDIT
 
     field_map = {
         BTN_BREED_FULL: ("breed", "например: Бройлер"),
@@ -348,6 +418,7 @@ async def waiting_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     field, hint = field_map[text]
     context.user_data["edit_field"] = field
+    logger.info(f"✅ Выбрано поле для редактирования: {field}")
 
     await safe_reply(
         update,
@@ -364,9 +435,21 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     text = update.effective_message.text.strip()
     field = context.user_data.get("edit_field")
     order_id = context.user_data.get("edit_order_id")
+    logger.info(f"📝 [waiting_edit_value] Ввод значения: '{text}' для поля '{field}' (заказ {order_id})")
 
     if text == BTN_BACK_FULL:
-        return await handle_order_action(update, context)
+        keyboard = [
+            [BTN_BREED_FULL, BTN_EDIT_QUANTITY_FULL],
+            [BTN_INCUBATOR_FULL, BTN_DELIVERY_DATE_FULL],
+        ]
+        await safe_reply(
+            update,
+            context,
+            f"✏️ Выберите, что изменить в заказе №<b>{order_id}</b>:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+            parse_mode="HTML"
+        )
+        return WAITING_EDIT_FIELD
 
     if not field or not order_id:
         return await exit_to_admin_menu(update, context, "❌ Ошибка: начните сначала.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
@@ -394,7 +477,6 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not new_value.isdigit() or (new_qty := int(new_value)) <= 0:
             await safe_reply(update, context, "❌ Введите положительное число.")
             return WAITING_EDIT_VALUE
-
         available, current_stock = await check_stock_availability(
             current_order["breed"], current_order["incubator"], new_qty
         )
@@ -420,8 +502,8 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data["edit_new_value"] = new_value
     context.user_data["edit_old_value"] = current_order[field]
-
     old_val = current_order[field]
+
     await safe_reply(
         update,
         context,
@@ -433,12 +515,14 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=get_confirmation_keyboard(),
         parse_mode="HTML"
     )
+    logger.info(f"✅ Подготовка к подтверждению изменения: {field} = {new_value}")
     return CONFIRM_EDIT_FINAL
 
 
 # === Финальное подтверждение ===
 async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
+    logger.info(f"✅ [confirm_edit_final] Подтверждение: '{text}'")
 
     if text == BTN_BACK_FULL:
         field = context.user_data.get("edit_field")
@@ -449,7 +533,6 @@ async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "date": "в формате ДД-ММ-ГГГГ"
         }
         hint = hint_map.get(field, "")
-
         await safe_reply(
             update,
             context,
@@ -460,7 +543,13 @@ async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return WAITING_EDIT_VALUE
 
     if text != BTN_CONFIRM_FULL:
-        return await exit_to_admin_menu(update, context, "❌ Изменение отменено.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
+        await safe_reply(
+            update,
+            context,
+            "❌ Изменение отменено.",
+            reply_markup=get_back_only_keyboard()
+        )
+        return CONFIRM_EDIT
 
     field = context.user_data.get("edit_field")
     new_value = context.user_data.get("edit_new_value")
@@ -471,11 +560,11 @@ async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         await db.execute_write(f"UPDATE orders SET {field} = ? WHERE id = ?", (new_value, order_id))
-
         order = await db.execute_read("SELECT * FROM orders WHERE id = ?", (order_id,))
         if order:
             from utils.notifications import notify_client_order_updated
             await notify_client_order_updated(dict(order[0]))
+            logger.info(f"✅ Уведомление клиента отправлено: заказ {order_id} обновлён")
 
         return await exit_to_admin_menu(
             update,
@@ -489,12 +578,25 @@ async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"❌ Ошибка при обновлении заказа {order_id}: {e}", exc_info=True)
         return await exit_to_admin_menu(update, context, "❌ Ошибка при сохранении.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
 
+
 # === Ручное подтверждение заказа ===
 async def confirm_manual_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
+    logger.info(f"✅ [confirm_manual_approve] Подтверждение заказа: '{text}'")
 
     if text == BTN_BACK_FULL:
-        return await handle_order_action(update, context)
+        keyboard = [
+            [BTN_CANCEL_FULL, BTN_EDIT_ORDER_FULL],
+            [BTN_CONFIRM_FULL, BTN_BACK_FULL],
+        ]
+        await safe_reply(
+            update,
+            context,
+            "📞 Выберите действие с заказом:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+            parse_mode="HTML"
+        )
+        return WAITING_ORDER_ACTION
 
     if not text.isdigit():
         await safe_reply(
@@ -507,8 +609,6 @@ async def confirm_manual_approve(update: Update, context: ContextTypes.DEFAULT_T
 
     order_id = int(text)
     phone = context.user_data.get("client_phone")
-
-    # 🔍 Получаем заказ с user_id
     order = await db.execute_read(
         "SELECT id, breed, quantity, price, date, incubator, phone, user_id FROM orders WHERE id = ? AND phone = ?",
         (order_id, phone)
@@ -523,7 +623,6 @@ async def confirm_manual_approve(update: Update, context: ContextTypes.DEFAULT_T
         )
 
     order_data = order[0]
-
     current_status_row = await db.execute_read("SELECT status FROM orders WHERE id = ?", (order_id,))
     if not current_status_row:
         return await exit_to_admin_menu(update, context, "❌ Заказ не существует.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
@@ -539,23 +638,20 @@ async def confirm_manual_approve(update: Update, context: ContextTypes.DEFAULT_T
         )
 
     try:
-        # ✅ Обновляем статус
         success = await db.execute_write(
             "UPDATE orders SET status = 'active', confirmed_at = datetime('now') WHERE id = ?",
             (order_id,)
         )
-
         if not success:
             return await exit_to_admin_menu(update, context, "❌ Не удалось подтвердить заказ.")
 
-        # ✅ Доверяем номер
         await db.trust_phone(order_data["phone"], order_data["user_id"])
+        logger.info(f"🔐 Номер {order_data['phone']} доверен для пользователя {order_data['user_id']}")
 
-        # ✅ Уведомляем клиента
         try:
             from utils.notifications import notify_client_order_confirmed
             await notify_client_order_confirmed(
-                context=context,           # правильный контекст
+                context=context,
                 user_id=order_data["user_id"],
                 order_id=order_data["id"],
                 breed=order_data["breed"],
@@ -566,7 +662,6 @@ async def confirm_manual_approve(update: Update, context: ContextTypes.DEFAULT_T
             logger.warning(f"⚠️ Уведомление клиенту не отправлено: {e}")
 
         logger.info(f"✅ Админ {update.effective_user.id} подтвердил заказ №{order_id} → номер доверен")
-
         return await exit_to_admin_menu(
             update,
             context,
@@ -574,10 +669,10 @@ async def confirm_manual_approve(update: Update, context: ContextTypes.DEFAULT_T
             keys_to_clear=ORDER_KEYS_TO_CLEAR,
             parse_mode="HTML"
         )
-
     except Exception as e:
         logger.error(f"❌ Ошибка при ручном подтверждении заказа {order_id}: {e}", exc_info=True)
         return await exit_to_admin_menu(update, context, "❌ Не удалось подтвердить заказ.")
+
 
 # === Fallback: "Назад" → возврат в меню ===
 async def fallback_back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -585,15 +680,47 @@ async def fallback_back_to_main(update: Update, context: ContextTypes.DEFAULT_TY
     return await exit_to_admin_menu(update, context, "🚪 Возвращаемся в меню.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
 
 
+# === Гарантия чистого контекста перед входом ===
+async def pre_entry_cleaner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Перед входом в диалог — очищаем следы предыдущих диалогов.
+    Это гарантирует, что HANDLED не блокирует обработку.
+    """
+    logger.info("🧹 [pre_entry_cleaner] Очистка перед входом в диалог заказов")
+    logger.debug(f"📊 Было: {context.user_data}")
+
+    keys_to_remove = [
+        "HANDLED",
+        "current_conversation",
+        "edit_stock_id",
+        "edit_flow_history",
+        "view_stock_id",
+        "stock_details",
+        "issue_step",
+        "selected_order",
+        # Ключи редактирования заказа
+        "edit_order_id",
+        "edit_field",
+        "edit_new_value",
+        "edit_old_value",
+    ]
+    for key in keys_to_remove:
+        if key in context.user_data:
+            logger.debug(f"🧹 Удалён ключ: {key}")
+            context.user_data.pop(key, None)
+
+    logger.info("✅ Контекст очищен, переходим к handle_orders")
+    return await handle_orders(update, context)
+
+
 # === Регистрация обработчика ===
 def register_admin_orders_handler(application):
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(
-                filters.ChatType.PRIVATE
-                & filters.Text([ADMIN_ORDERS_BUTTON_TEXT]),
-                handle_orders
-            )
+                filters.ChatType.PRIVATE & filters.Text([ADMIN_ORDERS_BUTTON_TEXT]),
+                pre_entry_cleaner  # ← Чистим перед входом
+            ),
         ],
         states={
             WAITING_FOR_PHONE: [
@@ -615,7 +742,10 @@ def register_admin_orders_handler(application):
                 MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_edit_value)
             ],
             CONFIRM_EDIT_FINAL: [
-                MessageHandler(filters.Text([BTN_CONFIRM_FULL]), confirm_edit_final),
+                MessageHandler(
+                    filters.Text([BTN_CONFIRM_FULL]) | filters.Text([BTN_BACK_FULL]),
+                    confirm_edit_final
+                ),
             ],
             CONFIRM_MANUAL_APPROVE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_manual_approve)
@@ -626,7 +756,7 @@ def register_admin_orders_handler(application):
             MessageHandler(filters.COMMAND, fallback_back_to_main),
         ],
         per_user=True,
-        allow_reentry=True,
+        allow_reentry=True,  # ✅ ВАЖНО: теперь можно перезайти в диалог
         name="admin_view_orders"
     )
 

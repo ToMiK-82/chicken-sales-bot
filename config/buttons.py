@@ -1,10 +1,3 @@
-# config/buttons.py
-from typing import List, Optional, Dict
-from telegram import ReplyKeyboardMarkup, KeyboardButton
-import logging
-
-logger = logging.getLogger(__name__)
-
 """
 Модуль с унифицированными константами для кнопок и готовыми клавиатурами.
 ✅ Все кнопки — с эмодзи через with_emoji
@@ -12,6 +5,12 @@ logger = logging.getLogger(__name__)
 ✅ Фильтры работают на 100% по точному тексту
 ✅ Полная совместимость с startup_check и handlers
 """
+
+from typing import List, Optional, Dict
+from telegram import ReplyKeyboardMarkup, KeyboardButton
+import logging
+
+logger = logging.getLogger(__name__)
 
 # === КНОПКИ: ТОЛЬКО ТЕКСТ (без эмодзи) ===
 
@@ -42,7 +41,8 @@ BTN_CANCEL_PROMO = "Отменить акцию"  # ← НОВАЯ КНОПКА
 BTN_CONFIRM = "Подтвердить"
 BTN_CANCEL = "Отменить"
 BTN_BACK = "Назад"
-BTN_EDIT = "Изменить"
+BTN_EDIT = "Изменить"             # → ✏️ Изменить (партии)
+BTN_EDIT_ORDER = "Изменить"       # → 🔧 Изменить (заказы) — тот же текст, но другой эмодзи
 BTN_LIST = "Список"
 
 # --- Поля и параметры ---
@@ -136,7 +136,8 @@ ACTION_EMOJI: Dict[str, str] = {
     BTN_CONFIRM: "✅",
     BTN_CANCEL: "❌",
     BTN_BACK: "⬅️",
-    BTN_EDIT: "✏️",
+    BTN_EDIT: "✏️",              # ✏️ Изменить (партии)
+    BTN_EDIT_ORDER: "🔧",        # 🔧 Изменить (заказы)
     BTN_LIST: "📋",
     BTN_BREED: "🐔",
     BTN_INCUBATOR: "🏭",
@@ -221,7 +222,8 @@ BTN_CANCEL_PROMO_FULL = with_emoji(BTN_CANCEL_PROMO, OTHER_EMOJI)  # 🗑️ О�
 BTN_CONFIRM_FULL = with_emoji(BTN_CONFIRM, ACTION_EMOJI)
 BTN_CANCEL_FULL = with_emoji(BTN_CANCEL, ACTION_EMOJI)
 BTN_BACK_FULL = with_emoji(BTN_BACK, ACTION_EMOJI)
-BTN_EDIT_FULL = with_emoji(BTN_EDIT, ACTION_EMOJI)
+BTN_EDIT_FULL = with_emoji(BTN_EDIT, ACTION_EMOJI)          # ✏️ Изменить (партии)
+BTN_EDIT_ORDER_FULL = with_emoji(BTN_EDIT_ORDER, ACTION_EMOJI)  # 🔧 Изменить (заказы)
 BTN_LIST_FULL = with_emoji(BTN_LIST, ACTION_EMOJI)
 
 BTN_BREED_FULL = with_emoji(BTN_BREED, ACTION_EMOJI)
@@ -569,7 +571,7 @@ def get_promo_list_actions_keyboard() -> ReplyKeyboardMarkup:
     """
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton(BTN_CANCEL_PROMO_FULL), KeyboardButton(BTN_BACK_FULL)]           # ⬅️ Назад
+            [KeyboardButton(BTN_CANCEL_PROMO_FULL), KeyboardButton(BTN_BACK_FULL)]
         ],
         resize_keyboard=True,
         one_time_keyboard=False
@@ -582,7 +584,7 @@ __all__ = [
     "BTN_CATALOG", "BTN_ORDERS", "BTN_SCHEDULE", "BTN_CONTACTS", "BTN_HELP", "BTN_PROMOTIONS",
     "BTN_ADMIN_ADD", "BTN_ADMIN_STOCKS", "BTN_ADMIN_ORDERS", "BTN_ADMIN_ISSUE", "BTN_ADMIN_BROADCAST",
     "BTN_ADMIN_STATS", "BTN_ADMIN_PROMO", "BTN_ADMIN_HELP", "BTN_ADMIN_EXIT",
-    "BTN_CREATE_PROMO", "BTN_CANCEL_PROMO", "BTN_CONFIRM", "BTN_CANCEL", "BTN_BACK", "BTN_EDIT", "BTN_LIST",
+    "BTN_CREATE_PROMO", "BTN_CANCEL_PROMO", "BTN_CONFIRM", "BTN_CANCEL", "BTN_BACK", "BTN_EDIT", "BTN_EDIT_ORDER", "BTN_LIST",
     "BTN_BREED", "BTN_INCUBATOR", "BTN_DELIVERY_DATE", "BTN_EDIT_QUANTITY", "BTN_EDIT_DATE",
     "BTN_REQUEST_PHONE", "BTN_NO", "BTN_YES", "BTN_BY_ID", "BTN_BY_PHONE", "BTN_BY_BATCH", "BTN_ISSUE_CONFIRM",
     "BTN_SEARCH", "BTN_CANCEL_ORDER", "BROADCAST_TEXT", "BROADCAST_PHOTO", "BROADCAST_RECIPIENTS_ALL",
@@ -594,7 +596,7 @@ __all__ = [
     "BTN_ADMIN_ORDERS_FULL", "BTN_ADMIN_ISSUE_FULL", "BTN_ADMIN_BROADCAST_FULL",
     "BTN_ADMIN_STATS_FULL", "BTN_ADMIN_PROMO_FULL", "BTN_ADMIN_HELP_FULL", "BTN_ADMIN_EXIT_FULL",
     "BTN_CREATE_PROMO_FULL", "BTN_CANCEL_PROMO_FULL", "BTN_CONFIRM_FULL", "BTN_CANCEL_FULL", "BTN_BACK_FULL",
-    "BTN_EDIT_FULL", "BTN_LIST_FULL", "BTN_BREED_FULL", "BTN_INCUBATOR_FULL", "BTN_DELIVERY_DATE_FULL",
+    "BTN_EDIT_FULL", "BTN_EDIT_ORDER_FULL", "BTN_LIST_FULL", "BTN_BREED_FULL", "BTN_INCUBATOR_FULL", "BTN_DELIVERY_DATE_FULL",
     "BTN_EDIT_QUANTITY_FULL", "BTN_EDIT_DATE_FULL", "BTN_REQUEST_PHONE_FULL", "BTN_YES_FULL", "BTN_NO_FULL",
     "BTN_CANCEL_ORDER_FULL", "BTN_ISSUE_CONFIRM_FULL", "BTN_SEARCH_FULL", "BROADCAST_TEXT_FULL",
     "BROADCAST_PHOTO_FULL", "BROADCAST_RECIPIENTS_ALL_FULL", "BROADCAST_RECIPIENTS_CUSTOMERS_FULL",
@@ -623,9 +625,17 @@ __all__ = [
     "get_id_selection_keyboard", "get_promo_list_actions_keyboard",
 
     # === Утилиты ===
-    "BACK_BUTTON", "REQUEST_PHONE_BUTTON", "with_emoji",
+    "BACK_BUTTON", 
+    "REQUEST_PHONE_BUTTON", 
+    "with_emoji",
 
     # === Словари эмодзи ===
-    "BREED_EMOJI", "INCUBATOR_EMOJI", "MAIN_MENU_EMOJI", "ACTION_EMOJI", "ADMIN_MENU_EMOJI", "ISSUE_EMOJI",
-    "BROADCAST_EMOJI", "OTHER_EMOJI",
+    "BREED_EMOJI", 
+    "INCUBATOR_EMOJI", 
+    "MAIN_MENU_EMOJI", 
+    "ACTION_EMOJI", 
+    "ADMIN_MENU_EMOJI", 
+    "ISSUE_EMOJI",
+    "BROADCAST_EMOJI", 
+    "OTHER_EMOJI",
 ]

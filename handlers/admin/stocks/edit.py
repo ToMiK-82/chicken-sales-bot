@@ -11,6 +11,7 @@
 ✅ Безопасная работа с историей
 ✅ Все fallbacks покрыты
 ✅ Нет дублирования при входе
+✅ Не перехватывает чужие кнопки (например, 🔧 Изменить)
 """
 
 import logging
@@ -67,20 +68,59 @@ async def fallback_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# === Fallback: передача необработанного текста дальше ===
+async def fallback_any_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Если сообщение не подошло ни к одному состоянию — завершаем диалог.
+    Это позволяет следующим группам (например, group=2) обработать сообщение.
+    """
+    if context.user_data.get("HANDLED"):
+        context.user_data.pop("HANDLED", None)
+        logger.debug(f"🧹 fallback_any_text: HANDLED снят для пользователя {update.effective_user.id}")
+    return ConversationHandler.END
+
+
 # === 1. Начало: "Редактировать партию" ===
 async def handle_edit_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_admin(update, context):
-        return await exit_to_admin_menu(update, context, "❌ У вас нет прав.")
+    user_id = update.effective_user.id
+    message_text = update.effective_message.text.strip()
 
-    # 🔥 ВЫХОДИМ ИЗ ДРУГОГО ДИАЛОГА (например, view.py)
-    if context.user_data.get("current_conversation") == "stock_view":
+    # 🔍 Самое первое — логируем вызов
+    logger.info(f"🔄 [handle_edit_stock] Вызов обработчика редактирования партии")
+    logger.info(f"👤 Пользователь: {user_id}")
+    logger.info(f"💬 Получено сообщение: '{message_text}'")
+    logger.debug(f"📊 context.user_data до проверки: {context.user_data}")
+
+    # 🔒 Проверяем, в каком состоянии находится пользователь
+    current_conv = context.user_data.get("current_conversation")
+    is_handled = context.user_data.get("HANDLED")
+
+    logger.info(f"📌 Текущее состояние: current_conversation='{current_conv}', HANDLED={is_handled}")
+
+    # ❌ Блокируем, если пользователь в процессе работы с заказами
+    if current_conv in ["view_orders", "edit_order"]:
+        logger.warning(f"🚫 handle_edit_stock: блокировка вызова из контекста '{current_conv}'")
+        logger.info("➡️ Управление передаётся дальше (ConversationHandler.END)")
+        return ConversationHandler.END
+
+    # 🔥 Если мы были в просмотра остатков — выходим из него
+    if current_conv == "stock_view":
         from handlers.admin.stocks.view import STOCK_VIEW_KEYS
         for key in STOCK_VIEW_KEYS + ["current_conversation"]:
-            context.user_data.pop(key, None)
+            if key in context.user_data:
+                logger.debug(f"🧹 Очистка ключа: {key}")
+                context.user_data.pop(key, None)
         context.user_data["HANDLED"] = True
+        logger.info("🚪 Успешно вышли из состояния 'stock_view'")
 
-    logger.info(f"🔄 Админ {update.effective_user.id} начал редактирование партии")
+    # Проверка прав
+    if not await check_admin(update, context):
+        logger.warning(f"❌ Доступ запрещён: пользователь {user_id} не админ")
+        return await exit_to_admin_menu(update, context, "❌ У вас нет прав.")
 
+    logger.info(f"✅ Админ {user_id} начал редактирование партии")
+
+    # Загрузка активных партий
     rows: List[Tuple] = await db.execute_read("""
         SELECT id, breed, incubator, date, quantity, available_quantity, price
         FROM stocks 
@@ -89,7 +129,10 @@ async def handle_edit_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """)
 
     if not rows:
+        logger.warning("📭 Нет активных партий для редактирования")
         return await exit_to_admin_menu(update, context, "📭 Нет активных партий для редактирования.")
+
+    logger.info(f"📋 Найдено {len(rows)} активных партий")
 
     stock_list = []
     message_lines = ["🔍 <b>Выберите партию для редактирования:</b>\n"]
@@ -100,21 +143,24 @@ async def handle_edit_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stock_list.append((stock_id, line))
         message_lines.append(f"<b>{i+1}.</b> {line}")
 
-    message_text = "\n".join(message_lines) + "\n\nВведите номер партии."
+    message_text_out = "\n".join(message_lines) + "\n\nВведите номер партии."
 
     await safe_reply(
         update,
         context,
-        message_text,
+        message_text_out,
         reply_markup=get_back_only_keyboard(),
         parse_mode="HTML"
     )
 
-    # Инициализируем данные
+    # Инициализация состояния
     context.user_data['edit_flow_history'] = ['SELECT_STOCK']
     context.user_data['stock_list'] = stock_list
     context.user_data['current_conversation'] = 'edit_stock'
     context.user_data['HANDLED'] = True
+
+    logger.info("🔄 Переход в состояние EDIT_STOCK_SELECT")
+    logger.debug(f"📊 Полное состояние после инициализации: {context.user_data}")
 
     return EDIT_STOCK_SELECT
 
@@ -125,14 +171,21 @@ async def handle_edit_stock_select(update: Update, context: ContextTypes.DEFAULT
         return await fallback_to_main(update, context)
 
     text = update.message.text.strip()
+    logger.info(f"🔢 [handle_edit_stock_select] Ввод: '{text}'")
 
     if text == BTN_BACK_FULL:
+        logger.info("🔙 Переход в главное меню (отмена редактирования)")
         return await exit_to_admin_menu(
             update,
             context,
             "🚪 Вы отменили редактирование.",
             keys_to_clear=EDIT_STOCK_KEYS
         )
+
+    if not text.isdigit():
+        logger.warning(f"❌ Введено не число: '{text}' → прекращаем обработку")
+        context.user_data.pop("HANDLED", None)
+        return ConversationHandler.END
 
     try:
         index = int(text) - 1
@@ -141,6 +194,7 @@ async def handle_edit_stock_select(update: Update, context: ContextTypes.DEFAULT
             raise ValueError
         stock_id, display_line = stock_list[index]
         context.user_data['edit_stock_id'] = stock_id
+        logger.info(f"✅ Выбрана партия: ID={stock_id}")
     except (ValueError, IndexError):
         await safe_reply(
             update,
@@ -166,6 +220,7 @@ async def handle_edit_stock_select(update: Update, context: ContextTypes.DEFAULT
 
     context.user_data['edit_flow_history'].append('CHOOSE_ACTION')
     context.user_data['HANDLED'] = True
+    logger.info("🔄 Переход в WAITING_FOR_ACTION")
     return WAITING_FOR_ACTION
 
 
@@ -176,10 +231,11 @@ async def handle_edit_action_choice(update: Update, context: ContextTypes.DEFAUL
 
     text = update.message.text.strip()
     history = context.user_data.setdefault('edit_flow_history', [])
+    logger.info(f"⚙️ [handle_edit_action_choice] Выбор действия: '{text}'")
 
     if text == BTN_BACK_FULL:
         if len(history) > 1:
-            history.pop()  # Убираем текущий шаг
+            history.pop()
             await safe_reply(
                 update,
                 context,
@@ -188,9 +244,9 @@ async def handle_edit_action_choice(update: Update, context: ContextTypes.DEFAUL
                 parse_mode="HTML"
             )
             context.user_data['HANDLED'] = True
+            logger.info("🔙 Возврат к выбору партии")
             return EDIT_STOCK_SELECT
         else:
-            # Если больше некуда — выход
             return await exit_to_admin_menu(
                 update,
                 context,
@@ -215,6 +271,7 @@ async def handle_edit_action_choice(update: Update, context: ContextTypes.DEFAUL
         )
         history.append('ENTER_QUANTITY')
         context.user_data['HANDLED'] = True
+        logger.info(f"📈 Редактирование количества для партии {stock_id}")
         return EDIT_STOCK_QUANTITY
 
     elif text == BTN_EDIT_DATE_FULL:
@@ -234,6 +291,7 @@ async def handle_edit_action_choice(update: Update, context: ContextTypes.DEFAUL
         )
         history.append('ENTER_DATE')
         context.user_data['HANDLED'] = True
+        logger.info(f"📅 Редактирование даты для партии {stock_id}")
         return EDIT_STOCK_DATE
 
     await safe_reply(
@@ -254,6 +312,7 @@ async def handle_edit_stock_quantity(update: Update, context: ContextTypes.DEFAU
 
     text = update.message.text.strip()
     history = context.user_data.setdefault('edit_flow_history', [])
+    logger.info(f"🔢 [handle_edit_stock_quantity] Ввод: '{text}'")
 
     if text == BTN_BACK_FULL:
         if len(history) > 1:
@@ -273,6 +332,16 @@ async def handle_edit_stock_quantity(update: Update, context: ContextTypes.DEFAU
             return WAITING_FOR_ACTION
         else:
             return await exit_to_admin_menu(update, context, "🚪 Вы отменили редактирование.", keys_to_clear=EDIT_STOCK_KEYS)
+
+    if not text.isdigit():
+        await safe_reply(
+            update,
+            context,
+            "❌ Введите число ≥ 0.",
+            reply_markup=get_back_only_keyboard(),
+            parse_mode="HTML"
+        )
+        return EDIT_STOCK_QUANTITY
 
     try:
         new_qty = int(text)
@@ -330,6 +399,7 @@ async def handle_edit_stock_date(update: Update, context: ContextTypes.DEFAULT_T
 
     text = update.message.text.strip()
     history = context.user_data.setdefault('edit_flow_history', [])
+    logger.info(f"📅 [handle_edit_stock_date] Ввод: '{text}'")
 
     if text == BTN_BACK_FULL:
         if len(history) > 1:
@@ -403,6 +473,7 @@ async def handle_confirm_edit_stock(update: Update, context: ContextTypes.DEFAUL
 
     text = update.message.text.strip()
     history = context.user_data.setdefault('edit_flow_history', [])
+    logger.info(f"✅ [handle_confirm_edit_stock] Подтверждение: '{text}'")
 
     if text == BTN_BACK_FULL:
         if len(history) > 1:
@@ -441,13 +512,11 @@ async def handle_confirm_edit_stock(update: Update, context: ContextTypes.DEFAUL
                 context.user_data['HANDLED'] = True
                 return EDIT_STOCK_DATE
 
-        # Если больше некуда — выход
         return await exit_to_admin_menu(update, context, "🚪 Вы отменили редактирование.", keys_to_clear=EDIT_STOCK_KEYS)
 
     if text != BTN_CONFIRM_FULL:
         return await fallback_to_main(update, context)
 
-    # === СОХРАНЕНИЕ ===
     stock_id = context.user_data.get('edit_stock_id')
     new_qty = context.user_data.get('edit_quantity')
     new_date = context.user_data.get('edit_date')
@@ -500,7 +569,6 @@ async def handle_confirm_edit_stock(update: Update, context: ContextTypes.DEFAUL
         logger.error(f"❌ Ошибка при обновлении партии id={stock_id}: {e}", exc_info=True)
         return await exit_to_admin_menu(update, context, "❌ Ошибка при сохранении.", keys_to_clear=EDIT_STOCK_KEYS)
 
-    # Очистка
     for key in EDIT_STOCK_KEYS:
         context.user_data.pop(key, None)
     context.user_data["HANDLED"] = True
@@ -515,7 +583,10 @@ def register_edit_stock_handler(application):
         ],
         states={
             EDIT_STOCK_SELECT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_stock_select),
+                MessageHandler(
+                    filters.Regex(r'^\d+$') | filters.Text([BTN_BACK_FULL]),
+                    handle_edit_stock_select
+                ),
             ],
             WAITING_FOR_ACTION: [
                 MessageHandler(
@@ -524,10 +595,16 @@ def register_edit_stock_handler(application):
                 ),
             ],
             EDIT_STOCK_QUANTITY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_stock_quantity),
+                MessageHandler(
+                    filters.Regex(r'^\d+$') | filters.Text([BTN_BACK_FULL]),
+                    handle_edit_stock_quantity
+                ),
             ],
             EDIT_STOCK_DATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_stock_date),
+                MessageHandler(
+                    filters.Regex(r'^\d{2}-\d{2}-\d{4}$') | filters.Text([BTN_BACK_FULL]),
+                    handle_edit_stock_date
+                ),
             ],
             CONFIRM_EDIT_STOCK: [
                 MessageHandler(
@@ -539,9 +616,10 @@ def register_edit_stock_handler(application):
         fallbacks=[
             MessageHandler(filters.Text([BTN_CANCEL_FULL]), fallback_to_main),
             MessageHandler(filters.COMMAND, fallback_to_main),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_any_text),
         ],
         per_user=True,
-        allow_reentry=True,
+        allow_reentry=False,
         name="admin_edit_stock"
     )
 

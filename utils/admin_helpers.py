@@ -12,7 +12,7 @@ from typing import Optional, Set, List
 from telegram import Update
 from telegram.ext import ContextTypes, Application, ConversationHandler
 from database.repository import db
-from config.buttons import get_admin_main_keyboard  # ✅ УДАЛИЛИ HANDLED_KEY
+from config.buttons import get_admin_main_keyboard
 from .messaging import safe_reply
 import logging
 
@@ -167,23 +167,14 @@ async def exit_to_admin_menu(
 ):
     """
     Унифицированный выход в главное меню.
-    Отправляет ОДНО сообщение: сначала текст действия, потом — заголовок "🔐 Админ-панель".
+    Отправляет ЕДИНСТВЕННОЕ сообщение: действие + заголовок.
 
     Порядок:
-        "Поиск отменён.\n\n🔐 Админ-панель"
-    + клавиатура
+        "Редактирование отменено.\n\n🔐 Админ-панель"
 
-    Args:
-        update: текущее сообщение
-        context: контекст
-        message: информационное сообщение (например, "Поиск отменён.")
-        keys_to_clear: какие ключи очистить
-        disable_notification: отключить уведомление
-        parse_mode: HTML (по умолчанию)
-    Returns:
-        ConversationHandler.END
+    Полностью очищает следы текущего диалога.
     """
-    # Общие ключи для очистки
+    # Стандартные ключи для очистки
     default_keys = {
         'breed', 'date', 'quantity', 'price', 'incubator',
         'edit_action', 'edit_breed', 'edit_quantity', 'edit_date',
@@ -191,13 +182,16 @@ async def exit_to_admin_menu(
         'add_breed', 'add_date', 'add_quantity', 'add_price', 'add_incubator',
         'issue_step', 'issue_query', 'selected_order',
         'current_state', 'in_conversation', 'waiting_for',
+        'edit_flow_history',           # ← история шагов
+        'current_conversation',        # ← КРИТИЧЕСКИ ВАЖНО!
+        'HANDLED',                     # ← предотвращает блокировку
     }
     keys_to_remove = (set(keys_to_clear or []) | default_keys) - {"back"}
 
     for key in keys_to_remove:
         context.user_data.pop(key, None)
 
-    # ✅ Единое сообщение: сначала — результат действия, потом — заголовок меню
+    # Единое сообщение
     full_message = f"{message}\n\n🔐 Админ-панель"
 
     await safe_reply(
