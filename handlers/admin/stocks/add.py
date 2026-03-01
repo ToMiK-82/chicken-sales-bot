@@ -12,6 +12,7 @@
 ✅ Использует exit_to_admin_menu — унифицированный выход
 ✅ Удалены with_emoji, BREED_EMOJI и другие ручные манипуляции
 ✅ Улучшено: HANDLED и current_conversation
+✅ Единая система состояний: строки из states.py
 """
 
 import logging
@@ -50,15 +51,17 @@ from utils.admin_helpers import check_admin, exit_to_admin_menu
 from utils.messaging import safe_reply
 from html import escape
 
-logger = logging.getLogger(__name__)
+# === Импорт состояний из единого источника ===
+from states import (
+    ADMIN_BREED,
+    ADMIN_DATE,
+    ADMIN_QUANTITY,
+    ADMIN_PRICE,
+    ADMIN_INCUBATOR,
+    CONFIRM_ADD,
+)
 
-# === Состояния ===
-ADMIN_BREED = 0
-ADMIN_DATE = 1
-ADMIN_QUANTITY = 2
-ADMIN_PRICE = 3
-ADMIN_INCUBATOR = 4
-CONFIRM_ADD = 5
+logger = logging.getLogger(__name__)
 
 # === Ключи для очистки при выходе ===
 ADD_STOCK_KEYS = [
@@ -86,7 +89,6 @@ async def handle_add_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info("👤 Админ начал добавление партии")
 
-    # ✅ Без await, передаём все породы через bot_data
     keyboard = get_breeds_keyboard({"available_breeds": BREEDS})
 
     await safe_reply(
@@ -118,10 +120,8 @@ async def handle_breed(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keys_to_clear=ADD_STOCK_KEYS
         )
 
-    # Сопоставляем: "🍗 Бройлер" → "Бройлер"
     breed = next((b for btn, b in zip(BREED_BUTTONS, BREEDS) if btn == text), None)
     if not breed:
-        # ✅ Без await, передаём все породы
         keyboard = get_breeds_keyboard({"available_breeds": BREEDS})
         await safe_reply(
             update,
@@ -155,7 +155,6 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
 
     if text == BTN_BACK_FULL:
-        # ✅ Без await, возврат к выбору породы
         keyboard = get_breeds_keyboard({"available_breeds": BREEDS})
         await safe_reply(
             update,
@@ -280,7 +279,6 @@ async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['price'] = round(price, 2)
     logger.info(f"💰 Цена: {price}")
 
-    # ✅ Передаём все инкубаторы, без await
     keyboard = get_incubator_keyboard(INCUBATORS)
     await safe_reply(
         update,

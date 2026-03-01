@@ -10,6 +10,9 @@
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, filters
 
+# Определяем END вручную — безопасно для всех версий python-telegram-bot
+END = ConversationHandler.END
+
 from config.buttons import (
     get_admin_main_keyboard,
     get_stock_action_keyboard,
@@ -63,10 +66,12 @@ async def _search_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE, que
         )
     except Exception as e:
         logger.error(f"❌ Ошибка при поиске: {e}", exc_info=True)
-        return await exit_to_admin_menu(update, context, "❌ Ошибка при поиске партий.")
+        await exit_to_admin_menu(update, context, "❌ Ошибка при поиске партий.")
+        return END
 
     if not stocks:
-        return await exit_to_admin_menu(update, context, f"🔍 Ничего не найдено: <b>{escape(query)}</b>")
+        await exit_to_admin_menu(update, context, f"🔍 Ничего не найдено: <b>{escape(query)}</b>")
+        return END
 
     message = f"🔍 <b>Результаты по «{escape(query)}»:</b>\n\n"
     for stock in stocks:
@@ -101,13 +106,14 @@ async def _search_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE, que
         parse_mode="HTML"
     )
     context.user_data["HANDLED"] = True
-    return ConversationHandler.END
+    return END
 
 
 # === Главный экран ===
 async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin(update, context):
-        return await exit_to_admin_menu(update, context, "❌ У вас нет доступа.")
+        await exit_to_admin_menu(update, context, "❌ У вас нет доступа.")
+        return END
 
     text = update.effective_message.text.strip()
     user_id = update.effective_user.id
@@ -118,7 +124,8 @@ async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text.lower().startswith("поиск "):
         query = text[6:].strip()
         if not query:
-            return await exit_to_admin_menu(update, context, "❌ Укажите слово для поиска.")
+            await exit_to_admin_menu(update, context, "❌ Укажите слово для поиска.")
+            return END
         return await _search_stocks(update, context, query)
 
     try:
@@ -127,10 +134,12 @@ async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"❌ Ошибка при загрузке остатков: {e}", exc_info=True)
-        return await exit_to_admin_menu(update, context, "❌ Ошибка при загрузке партий.")
+        await exit_to_admin_menu(update, context, "❌ Ошибка при загрузке партий.")
+        return END
 
     if not stocks:
-        return await exit_to_admin_menu(update, context, "📭 Нет активных партий.")
+        await exit_to_admin_menu(update, context, "📭 Нет активных партий.")
+        return END
 
     message = (
         "📦 <b>Текущие остатки:</b>\n\n"
@@ -169,7 +178,6 @@ async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     context.user_data["HANDLED"] = True
     context.user_data["current_conversation"] = "stock_view"
-
     return VIEW_STOCKS
 
 
@@ -179,23 +187,25 @@ async def handle_stock_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 🔥 КРИТИЧЕСКАЯ ПРОВЕРКА: если мы не в этом диалоге — выходим
     if context.user_data.get("current_conversation") != "stock_view":
-        return
+        return END  # ✅ Явно завершаем, а не просто return
 
     if text == BTN_BACK_FULL:
-        return await exit_to_admin_menu(
+        await exit_to_admin_menu(
             update,
             context,
             "🚪 Вы вышли из просмотра остатков.",
             keys_to_clear=STOCK_VIEW_KEYS
         )
+        return END  # ✅ Явное завершение диалога
 
     if text.lower().startswith("поиск "):
         query = text[6:].strip()
         if not query:
-            return await exit_to_admin_menu(update, context, "❌ Укажите слово для поиска.")
+            await exit_to_admin_menu(update, context, "❌ Укажите слово для поиска.")
+            return END
         return await _search_stocks(update, context, query)
 
-    # Только если мы всё ещё в состоянии просмотра — показываем подсказку
+    # Подсказка, если неизвестная команда
     await safe_reply(
         update,
         context,
@@ -205,6 +215,18 @@ async def handle_stock_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     context.user_data["HANDLED"] = True
     return VIEW_STOCKS
+
+
+# === Fallback: выход при команде (/start, /help и т.д.) ===
+async def fallback_to_main_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Завершает диалог просмотра остатков и возвращает в главное меню."""
+    await exit_to_admin_menu(
+        update,
+        context,
+        message="🚪 Просмотр остатков завершён.",
+        keys_to_clear=STOCK_VIEW_KEYS
+    )
+    return END
 
 
 # === Регистрация ===
@@ -223,12 +245,13 @@ def register_stock_view_handler(application):
         states={
             VIEW_STOCKS: [
                 MessageHandler(filters.Text([BTN_BACK_FULL]), handle_stock_action),
-                # Убрали BTN_EDIT_FULL — пусть edit.py сам ловит
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_stock_action),
             ],
         },
         fallbacks=[
-            MessageHandler(filters.COMMAND, exit_to_admin_menu),
+            # ✅ Только команды завершают диалог
+            MessageHandler(filters.COMMAND, fallback_to_main_view),
+            # ❌ УДАЛЁН: MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_any_text_view)
         ],
         per_user=True,
         allow_reentry=True,

@@ -18,6 +18,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# === Добавлено: явный END для завершения диалога ===
+END = ConversationHandler.END
+
 # --- Кэш для ID админов ---
 _admin_cache: Set[int] = set()
 _cache_initialized: bool = False
@@ -203,7 +206,7 @@ async def exit_to_admin_menu(
         disable_notification=disable_notification,
     )
 
-    return ConversationHandler.END
+    return END  # ✅ Теперь работает корректно
 
 
 # ✅ Экспорт
@@ -213,4 +216,5 @@ __all__ = [
     "admin_required",
     "refresh_admin_cache",
     "exit_to_admin_menu",
+    "END",  # ✅ Экспортируем, если нужно где-то ещё
 ]
