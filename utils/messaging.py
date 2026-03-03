@@ -148,10 +148,21 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
 
         # 📅 Поставки в ближайшие 7 дней
         upcoming_result = await db.execute_read(
-            "SELECT COUNT(*), SUM(available_quantity) FROM stocks WHERE status = 'active' AND date >= DATE('now') AND date <= DATE('now', '+7 days')"
+            """
+            SELECT 
+                COUNT(*), 
+                SUM(quantity),           -- ✅ Всего цыплят
+                SUM(available_quantity)  -- ✅ Доступно
+            FROM stocks 
+            WHERE status = 'active' 
+              AND date >= DATE('now') 
+              AND date <= DATE('now', '+7 days')
+            """
         )
-        upcoming_shipments = upcoming_result[0][0] if upcoming_result and upcoming_result[0] else 0
-        upcoming_chicks = upcoming_result[0][1] or 0
+        row = upcoming_result[0]
+        upcoming_shipments = row[0] or 0
+        total_chicks = row[1] or 0      # ✅ Теперь quantity
+        available_chicks = row[2] or 0
 
         report = (
             "📈 <b>Ежедневный отчёт</b>\n"
@@ -160,7 +171,8 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
             f"💰 <b>Выручка за день:</b> {new_revenue} руб.\n"
             f"📦 <b>Активных заказов:</b> {active_count} на {active_revenue} руб.\n"
             f"📅 <b>Поставок в ближайшие 7 дней:</b> {upcoming_shipments}\n"
-            f"🐥 <b>Всего цыплят:</b> {upcoming_chicks}\n"
+            f"🐥 <b>Всего цыплят:</b> {total_chicks}\n"
+            f"🟢 <b>Доступно:</b> {available_chicks}\n"
             f"✅ <b>Статус:</b> Готов"
         )
 
@@ -172,11 +184,12 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
             disable_cooldown=True,
             parse_mode="HTML"
         )
+        logger.info("✅ Ежедневный отчёт отправлен")
     except Exception as e:
         logger.error(f"❌ Ошибка при генерации ежедневного отчёта: {e}", exc_info=True)
 
 
-# === НАПОМИНАНИЕ АДМИНАМ ЗА 2 ДНЯ ===
+# === НАПОМИНАНИЕ АДМИНАМ ЗА 2 ДНЯ (исправлено) ===
 async def send_admin_shipment_reminder(context: ContextTypes.DEFAULT_TYPE):
     try:
         devops_chat_id = context.application.bot_data.get("DEVOPS_CHAT_ID")
@@ -184,20 +197,35 @@ async def send_admin_shipment_reminder(context: ContextTypes.DEFAULT_TYPE):
             return
 
         reminder_date = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
+
+        # 🔥 Берём ВСЕ активные партии на дату, даже если available_quantity = 0
         result = await db.execute_read(
-            "SELECT breed, incubator, available_quantity, price FROM stocks WHERE date = ? AND status = 'active' AND available_quantity > 0",
+            """
+            SELECT breed, incubator, quantity, available_quantity, price
+            FROM stocks
+            WHERE date = ? AND status = 'active'
+            ORDER BY breed
+            """,
             (reminder_date,)
         )
 
         if not result:
+            logger.info(f"📭 Нет поставок через 2 дня ({reminder_date})")
             return
 
         message_lines = [f"🔔 <b>Напоминание: поставки через 2 дня ({reminder_date})</b>"]
-        for breed, incubator, avail, price in result:
+
+        for breed, incubator, qty, avail, price in result:
+            sold = qty - avail
             incubator_text = f" | 🏢 <b>{escape(incubator)}</b>" if incubator else ""
+            price_int = int(float(price or 0))
+
             message_lines.append(
                 f"🐔 <b>{escape(breed)}</b>{incubator_text}\n"
-                f"📦 <b>{avail} шт.</b> × <b>{int(float(price))} руб.</b>\n"
+                f"📦 <b>Всего:</b> {qty} шт.\n"
+                f"🟢 <b>Доступно:</b> {avail} шт.\n"
+                f"🔴 <b>Заказано:</b> {sold} шт.\n"
+                f"💰 <b>Цена:</b> {price_int} руб.\n"
                 "──────────────────"
             )
 
@@ -209,6 +237,7 @@ async def send_admin_shipment_reminder(context: ContextTypes.DEFAULT_TYPE):
             disable_cooldown=True,
             parse_mode="HTML"
         )
+        logger.info(f"✅ Напоминание о поставках отправлено: {len(result)} партий")
     except Exception as e:
         logger.error(f"❌ Ошибка при отправке напоминания админам: {e}", exc_info=True)
 

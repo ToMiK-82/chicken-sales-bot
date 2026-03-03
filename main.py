@@ -165,21 +165,147 @@ async def force_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, f"❌ Ошибка: {e}")
 
 
+# --- Команда /checkstocks ---
+async def checkstocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🔍 Ручная проверка всех партий: сверяет available_quantity с реальными заказами.
+    Доступно только админам.
+    """
+    user_id = update.effective_user.id
+    admin_ids = context.application.bot_data.get("ADMIN_IDS", [])
+    if user_id not in admin_ids:
+        await safe_reply(update, context, "🔒 Доступно только администраторам.", disable_cooldown=True)
+        return
+
+    db = context.application.bot_data.get("db")
+    if not db:
+        await safe_reply(update, context, "❌ База данных не инициализирована.", disable_cooldown=True)
+        return
+
+    query = """
+        SELECT 
+            s.id, s.breed, s.incubator, s.date, s.quantity, s.available_quantity,
+            COALESCE(SUM(o.quantity), 0) AS total_ordered
+        FROM stocks s
+        LEFT JOIN orders o ON s.id = o.stock_id AND o.status IN ('pending', 'active')
+        WHERE s.status = 'active'
+        GROUP BY s.id
+        ORDER BY s.date, s.breed
+    """
+    try:
+        rows = await db.execute_read(query)
+        if not rows:
+            await safe_reply(update, context, "📭 Нет активных партий.", disable_cooldown=True)
+            return
+
+        report_lines = ["📋 <b>Состояние партий</b> (сравнение с заказами)\n"]
+
+        for row in rows:
+            correct_avail = row['quantity'] - row['total_ordered']
+            current_avail = row['available_quantity']
+            incubator_text = f" | 🏢 {row['incubator']}" if row['incubator'] else ""
+            status = "✅" if current_avail == correct_avail else "❌"
+
+            report_lines.append(
+                f"{status} <b>{row['breed']}</b> <code>({row['date']})</code>{incubator_text}\n"
+                f"   📦 Всего: {row['quantity']} шт\n"
+                f"   🟥 Заказано: {row['total_ordered']} шт\n"
+                f"   🟢 Доступно: {current_avail} шт (должно быть: {correct_avail})"
+            )
+
+        await safe_reply(
+            update, context,
+            "\n".join(report_lines),
+            parse_mode="HTML",
+            disable_cooldown=True
+        )
+        logger.info(f"🔧 /checkstocks выполнен пользователем {user_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /checkstocks: {e}", exc_info=True)
+        await safe_reply(update, context, "❌ Произошла ошибка при проверке данных.")
+
+
 # --- Инициализация при запуске ---
 async def post_init(application: Application):
     from config.buttons import get_main_keyboard
-    from database.repository import init_db  # Убрали `db` — будем получать из init_db()
+    from database.repository import init_db
 
     logger.info("🔄 Начало инициализации post_init...")
 
     # === 1. Инициализация базы данных ===
     try:
-        db = await init_db()  # ← Получаем экземпляр из функции
+        db = await init_db()
         application.bot_data["db"] = db
         logger.info("✅ База данных инициализирована и сохранена в bot_data['db']")
     except Exception as e:
         logger.critical(f"❌ Ошибка инициализации БД: {e}", exc_info=True)
         raise
+
+    # === 1.1 Проверка и исправление available_quantity ===
+    async def check_and_fix_stock_consistency():
+        logger.info("🔍 Проверка согласованности available_quantity по всем партиям...")
+        try:
+            query = """
+                SELECT 
+                    s.id,
+                    s.quantity,
+                    s.available_quantity,
+                    COALESCE(SUM(o.quantity), 0) AS total_ordered
+                FROM stocks s
+                LEFT JOIN orders o ON s.id = o.stock_id AND o.status IN ('pending', 'active')
+                WHERE s.status = 'active'
+                GROUP BY s.id
+            """
+            rows = await db.execute_read(query)
+
+            fixes = []
+            for row in rows:
+                correct_avail = row['quantity'] - row['total_ordered']
+                current_avail = row['available_quantity']
+
+                if abs(current_avail - correct_avail) > 0:
+                    logger.warning(
+                        f"⚠️ Расхождение в stock_id={row['id']}: "
+                        f"available={current_avail}, должно быть {correct_avail}"
+                    )
+                    fixes.append((correct_avail, row['id']))
+
+            if fixes:
+                logger.info(f"🔧 Применяем исправления к {len(fixes)} партиям...")
+                for avail, stock_id in fixes:
+                    success = await db.execute_write(
+                        "UPDATE stocks SET available_quantity = ? WHERE id = ?",
+                        (avail, stock_id)
+                    )
+                    if success:
+                        logger.info(f"✅ Исправлено: stock_id={stock_id}, available_quantity = {avail}")
+                    else:
+                        logger.error(f"❌ Не удалось обновить stock_id={stock_id}")
+
+                if DEVOPS_CHAT_ID:
+                    fix_report = (
+                        "🔧 <b>Автоисправление данных</b>\n"
+                        f"📦 Исправлено <b>{len(fixes)}</b> партий\n"
+                        "⚙️ Причина: расхождение между available_quantity и реальными заказами.\n"
+                        "📅 Это могло произойти из-за сбоя при создании заказов."
+                    )
+                    try:
+                        await application.bot.send_message(
+                            chat_id=DEVOPS_CHAT_ID,
+                            text=fix_report,
+                            parse_mode="HTML"
+                        )
+                        logger.info("📬 Уведомление об исправлении отправлено в DevOps")
+                    except Exception as e:
+                        logger.error(f"❌ Не удалось отправить уведомление об исправлении: {e}")
+            else:
+                logger.info("🟢 Все значения available_quantity согласованы — исправления не требуются.")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке согласованности партий: {e}", exc_info=True)
+
+    # Запускаем проверку при старте
+    await check_and_fix_stock_consistency()
 
     # === 2. Создание папки экспорта ===
     os.makedirs("exports", exist_ok=True)
@@ -233,7 +359,7 @@ async def post_init(application: Application):
 
     def schedule_job(job_name: str, callback, job_time: time):
         try:
-            existing_jobs = job_queue.jobs()  # ✅ Правильный способ в PTB v22.5
+            existing_jobs = job_queue.jobs()
             existing_names = [job.name for job in existing_jobs]
             if job_name in existing_names:
                 logger.debug(f"⚠️ Задача '{job_name}' уже существует — пропущено")
@@ -250,6 +376,14 @@ async def post_init(application: Application):
     schedule_job("reminder_1_day", send_pending_reminder_1_day, time(8, 0))
     schedule_job("unconfirmed_orders_report", send_unconfirmed_orders_report, time(12, 30))
     schedule_job("auto_archive_old_stocks", auto_archive_old_stocks, time(0, 10))
+
+    # === 8.5 Ежедневная проверка согласованности (автоматически в 01:00) ===
+    job_queue.run_daily(
+        check_and_fix_stock_consistency,
+        time=time(1, 0),
+        name="daily_stock_consistency_check"
+    )
+    logger.info("✅ Задача 'daily_stock_consistency_check' запланирована (ежедневно в 01:00)")
 
     # === 9. Уведомление в DevOps ===
     bot = application.bot
@@ -367,10 +501,11 @@ def register_handlers(application: Application):
 
     # === 5. Системные команды ===
     application.add_handler(CommandHandler("status", status_command), group=3)
+
     if DEBUG:
         application.add_handler(CommandHandler("debug", debug_command), group=3)
         application.add_handler(CommandHandler("forcestart", force_start), group=3)
-        logger.info("🔧 Системные команды (/status, /debug, /forcestart) зарегистрированы (group=3)")
+        logger.info("🔧 Системные команды (/status, /debug, /forcestart, /checkstocks) зарегистрированы (group=3)")
     else:
         application.add_handler(CommandHandler("forcestart", force_start), group=3)
         logger.debug("🔧 Системные команды зарегистрированы")
@@ -436,7 +571,8 @@ def main():
         application = (
             ApplicationBuilder()
             .token(TOKEN)
-            .connect_timeout(10.0)
+            .
+connect_timeout(10.0)
             .read_timeout(20.0)
             .write_timeout(20.0)
             .pool_timeout(5.0)

@@ -63,6 +63,7 @@ async def start_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📊 <code>/stats</code> — статистика\n"
             "📤 <code>/export</code> — выгрузка заказов\n"
             "📦 <code>/backup</code> — резервная копия\n"
+            "🔍 <code>/checkstocks</code> — проверить партии\n"
             "🧩 <code>/debug</code> — отладка (вкл: <b>" + ("✅" if debug_mode else "❌") + "</b>)\n"
             "📝 <code>/listadmins</code> — все админы\n"
             "🛠️ <code>/addadmin ID</code> — добавить\n"
@@ -96,6 +97,7 @@ async def start_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📊 <code>/stats</code> — статистика\n"
             "📤 <code>/export</code> — выгрузка заказов\n"
             "📦 <code>/backup</code> — резервная копия\n"
+            "🔍 <code>/checkstocks</code> — проверить партии\n"
             "🧩 <code>/debug</code> — отладка (вкл: <b>" + ("✅" if debug_mode else "❌") + "</b>)\n"
             "📝 <code>/listadmins</code> — все админы\n"
             "🛠️ <code>/addadmin ID</code> — добавить\n"
@@ -183,6 +185,7 @@ async def handle_admin_password(update: Update, context: ContextTypes.DEFAULT_TY
             "📊 <code>/stats</code> — статистика\n"
             "📤 <code>/export</code> — выгрузка заказов\n"
             "📦 <code>/backup</code> — резервная копия\n"
+            "🔍 <code>/checkstocks</code> — проверить партии\n"
             "🧩 <code>/debug</code> — отладка (вкл: <b>" + ("✅" if debug_mode else "❌") + "</b>)\n"
             "📝 <code>/listadmins</code> — все админы\n"
             "🛠️ <code>/addadmin ID</code> — добавить\n"
@@ -402,6 +405,65 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(update, context, text, parse_mode="HTML", disable_cooldown=True)
 
 
+# === НОВАЯ КОМАНДА: /checkstocks ===
+@admin_required
+async def checkstocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🔍 Ручная проверка всех партий: сверяет available_quantity с реальными заказами.
+    Показывает расхождения.
+    """
+    if not update.effective_user:
+        return
+
+    user_id = update.effective_user.id
+    db = context.application.bot_data.get("db")
+    if not db:
+        await safe_reply(update, context, "❌ База данных недоступна.")
+        return
+
+    query = """
+        SELECT 
+            s.id, s.breed, s.incubator, s.date, s.quantity, s.available_quantity,
+            COALESCE(SUM(o.quantity), 0) AS total_ordered
+        FROM stocks s
+        LEFT JOIN orders o ON s.id = o.stock_id AND o.status IN ('pending', 'active')
+        WHERE s.status = 'active'
+        GROUP BY s.id
+        ORDER BY s.date, s.breed
+    """
+    try:
+        rows = await db.execute_read(query)
+        if not rows:
+            await safe_reply(update, context, "📭 Нет активных партий.")
+            return
+
+        report_lines = ["📋 <b>Состояние партий</b> (сравнение с заказами)\n"]
+
+        for row in rows:
+            correct_avail = row['quantity'] - row['total_ordered']
+            current_avail = row['available_quantity']
+            incubator_text = f" | 🏢 {row['incubator']}" if row['incubator'] else ""
+            status = "✅" if current_avail == correct_avail else "❌"
+
+            report_lines.append(
+                f"{status} <b>{row['breed']}</b> <code>({row['date']})</code>{incubator_text}\n"
+                f"   📦 Всего: {row['quantity']} шт\n"
+                f"   🟥 Заказано: {row['total_ordered']} шт\n"
+                f"   🟢 Доступно: {current_avail} шт (должно быть: {correct_avail})"
+            )
+
+        await safe_reply(
+            update, context,
+            "\n".join(report_lines),
+            parse_mode="HTML",
+            disable_cooldown=True
+        )
+        logger.info(f"🔧 /checkstocks выполнен пользователем {user_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /checkstocks: {e}", exc_info=True)
+        await safe_reply(update, context, "❌ Ошибка при проверке данных.")
+
+
 # === КНОПКИ: group=1 ===
 @admin_required
 async def handle_admin_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -449,6 +511,7 @@ def register_admin_handlers(app: Application):
     app.add_handler(CommandHandler("addadmin", addadmin_command), group=0)
     app.add_handler(CommandHandler("rmadmin", rmadmin_command), group=0)
     app.add_handler(CommandHandler("listadmins", listadmins_command), group=0)
+    app.add_handler(CommandHandler("checkstocks", checkstocks_command), group=0)  # ✅ Добавлено
 
     # Подключаем другие модули
     from .stocks import register_stock_handlers
