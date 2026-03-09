@@ -109,6 +109,9 @@ class DB:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     confirmed_at TIMESTAMP,
+                    customer_name TEXT,
+                    customer_phone TEXT,
+                    created_by_admin INTEGER DEFAULT 0,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
@@ -200,7 +203,7 @@ class DB:
                 await self.conn.execute("ALTER TABLE stocks ADD COLUMN incubator TEXT NOT NULL DEFAULT 'Ленинский'")
                 logger.info("✅ Миграция: добавлен incubator в stocks")
 
-            # orders: updated_at, incubator, confirmed_at, status default pending
+            # orders: updated_at, incubator, confirmed_at
             async with self.conn.execute("PRAGMA table_info(orders)") as cursor:
                 cols = [c[1] for c in await cursor.fetchall()]
 
@@ -214,7 +217,7 @@ class DB:
                 await self.conn.execute("ALTER TABLE orders ADD COLUMN confirmed_at TIMESTAMP")
                 logger.info("✅ Миграция: добавлен confirmed_at в orders")
 
-            # ✅ ИСПРАВЛЕНО: проверка DEFAULT для status
+            # ✅ Проверка и исправление DEFAULT для status
             if 'status' in cols:
                 cursor = await self.conn.execute(
                     "SELECT dflt_value FROM pragma_table_info('orders') WHERE name = 'status'"
@@ -239,12 +242,29 @@ class DB:
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             confirmed_at TIMESTAMP,
+                            customer_name TEXT,
+                            customer_phone TEXT,
+                            created_by_admin INTEGER DEFAULT 0,
                             FOREIGN KEY (user_id) REFERENCES users (user_id)
                         );
-                        INSERT INTO orders SELECT id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at FROM orders_backup;
+                        INSERT INTO orders SELECT id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at, customer_name, customer_phone, created_by_admin FROM orders_backup;
                         DROP TABLE orders_backup;
                     ''')
                     logger.info("✅ Таблица orders обновлена: status DEFAULT 'pending'")
+
+            # ✅ Добавляем новые поля, если отсутствуют (даже после пересоздания)
+            async with self.conn.execute("PRAGMA table_info(orders)") as cursor:
+                cols = [c[1] for c in await cursor.fetchall()]
+
+            if 'customer_name' not in cols:
+                await self.conn.execute("ALTER TABLE orders ADD COLUMN customer_name TEXT")
+                logger.info("✅ Миграция: добавлен customer_name в orders")
+            if 'customer_phone' not in cols:
+                await self.conn.execute("ALTER TABLE orders ADD COLUMN customer_phone TEXT")
+                logger.info("✅ Миграция: добавлен customer_phone в orders")
+            if 'created_by_admin' not in cols:
+                await self.conn.execute("ALTER TABLE orders ADD COLUMN created_by_admin INTEGER DEFAULT 0")
+                logger.info("✅ Миграция: добавлен created_by_admin в orders")
 
             # users: phone, last_active
             async with self.conn.execute("PRAGMA table_info(users)") as cursor:
@@ -297,6 +317,7 @@ class DB:
             logger.error(f"Ошибка миграций: {e}", exc_info=True)
             await self.conn.rollback()
             raise
+
 
     async def _create_indexes(self):
         """Создаёт индексы для оптимизации запросов"""
