@@ -531,7 +531,10 @@ class DB:
         date: str,
         incubator: str,
         full_name: str,
-        username: str = None
+        username: str = None,
+        customer_name: str = None,
+        customer_phone: str = None,
+        created_by_admin: bool = False
     ) -> Optional[int]:
         stock = await self.get_stock_by_id(stock_id)
         if not stock or stock['available_quantity'] < quantity:
@@ -540,9 +543,11 @@ class DB:
         new_avail = stock['available_quantity'] - quantity
         queries = [
             (
-                "INSERT INTO orders (user_id, phone, breed, date, quantity, price, stock_id, incubator, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
-                (user_id, phone, breed, date, quantity, price, stock_id, incubator)
+                "INSERT INTO orders (user_id, phone, breed, date, quantity, price, stock_id, incubator, status, "
+                "customer_name, customer_phone, created_by_admin) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                (user_id, phone, breed, date, quantity, price, stock_id, incubator,
+                 customer_name or full_name, customer_phone or phone, int(created_by_admin))
             ),
             (
                 "UPDATE stocks SET available_quantity = ? WHERE id = ?",

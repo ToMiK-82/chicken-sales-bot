@@ -2,7 +2,9 @@
 Подтверждение заказа и его создание.
 ✅ Убрано преждевременное доверие номеру
 ✅ Заказ создаётся со статусом 'pending'
-✅ Доверие будет добавлено только при подтверждении
+✅ Поддержка: админ создаёт заказ за клиента
+✅ Поле customer_phone — настоящий номер клиента
+✅ created_by_admin = 1 для админ-заказов
 """
 
 from datetime import datetime
@@ -23,6 +25,9 @@ from .navigation import handle_back_button
 from .utils import clear_catalog_data
 from states import CONFIRM_ORDER, CHOOSE_QUANTITY
 from database.repository import db
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def _back_to_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -82,7 +87,7 @@ async def handle_confirm_order(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def _create_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Создание заказа в БД. Статус = 'pending'. Не доверяем номер сразу."""
+    """Создание заказа в БД. Поддержка заказов от лица клиента админом."""
     if context.user_data.get("_order_in_progress"):
         await safe_reply(update, context, "⏳ Заказ уже обрабатывается...")
         return ConversationHandler.END
@@ -90,6 +95,9 @@ async def _create_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["_order_in_progress"] = True
     try:
         user_id = update.effective_user.id
+        full_name = update.effective_user.full_name
+        username = update.effective_user.username
+
         breed = context.user_data["selected_breed"]
         incubator = context.user_data["selected_incubator"]
         date = context.user_data["selected_date"]
@@ -97,21 +105,37 @@ async def _create_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price = context.user_data["selected_price"]
         phone = context.user_data["phone"]
 
-        # ✅ Получаем stock_id
+        # Определяем: админ ли?
+        is_admin = user_id in context.application.bot_data.get("ADMIN_IDS", [])
+        customer_name = None
+        customer_phone = None
+
+        if is_admin:
+            # Админ вводит данные клиента → сохраняем как реального клиента
+            customer_name = context.user_data.get("admin_client_name") or "Клиент (админ)"
+            customer_phone = phone
+            # ❌ Не доверяем номер админу!
+            logger.info(f"🛠️ Админ {user_id} оформил заказ за клиента: {customer_name} ({customer_phone})")
+        else:
+            # Обычный пользователь
+            customer_name = full_name
+            customer_phone = phone
+            # ✅ Доверим номер позже при подтверждении (в админке)
+            logger.info(f"🛍️ Пользователь {user_id} оформил заказ: {full_name} ({phone})")
+
+        # Получаем stock_id
         stock_id = await db.get_stock_id(breed, incubator, date)
         if not stock_id:
             await safe_reply(update, context, "❌ Партия не найдена.", reply_markup=get_main_keyboard())
             return ConversationHandler.END
 
-        # ✅ ШАГ 1: Проверяем текущий остаток
-        stock = await db.execute_read(
-            "SELECT available_quantity FROM stocks WHERE id = ?", (stock_id,)
-        )
+        # Проверяем остаток
+        stock = await db.execute_read("SELECT available_quantity FROM stocks WHERE id = ?", (stock_id,))
         if not stock:
             await safe_reply(update, context, "❌ Партия не существует.", reply_markup=get_main_keyboard())
             return ConversationHandler.END
 
-        available_quantity = stock[0][0]
+        available_quantity = stock[0]["available_quantity"]
         if qty > available_quantity:
             await safe_reply(
                 update, context,
@@ -124,53 +148,49 @@ async def _create_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
 
-        # ✅ ШАГ 2: Выполняем транзакцию
+        # Транзакция
         async with db.semaphore:
             success = await db.execute_transaction([
-                # 1. Создаём заказ со статусом 'pending'
-                ("INSERT INTO orders (user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at) "
-                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'), datetime('now'))",
-                 (user_id, phone, breed, date, qty, price, stock_id, incubator)),
+                ("INSERT INTO orders "
+                 "(user_id, phone, breed, date, quantity, price, stock_id, incubator, status, "
+                 "created_at, updated_at, customer_name, customer_phone, created_by_admin) "
+                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'), datetime('now'), ?, ?, ?)",
+                 (user_id, phone, breed, date, qty, price, stock_id, incubator,
+                  customer_name, customer_phone, int(is_admin))),
 
-                # 2. Уменьшаем остаток ТОЛЬКО если хватает
                 ("UPDATE stocks SET available_quantity = available_quantity - ? "
                  "WHERE id = ? AND available_quantity >= ?",
                  (qty, stock_id, qty)),
 
-                # 3. Меняем статус на 'inactive' ТОЛЬКО если реально ≤ 0
                 ("UPDATE stocks SET status = 'inactive' "
                  "WHERE id = ? AND (SELECT available_quantity FROM stocks WHERE id = ?) <= 0",
                  (stock_id, stock_id)),
             ])
 
         if not success:
-            # 🔍 Редкий случай: кто-то успел выкупить между проверкой и транзакцией
             await safe_reply(
                 update, context,
-                "❌ К сожалению, количество изменилось. Попробуйте ещё раз — возможно, осталось меньше.",
+                "❌ К сожалению, количество изменилось. Попробуйте ещё раз.",
                 reply_markup=get_main_keyboard()
             )
             return ConversationHandler.END
-
-        # ✅ Успешно создан — СТАТУС = pending
-        # ❌ НЕ ВЫЗЫВАЕМ trust_phone(phone, user_id) — это сделаем позже!
 
         delivery_date = datetime.strptime(date, "%Y-%m-%d").strftime("%d-%m-%Y")
         await safe_reply(update, context,
             f"✅ <b>Заказ оформлен!</b> 🎉\n\n"
             f"🐔 <b>Порода:</b> {escape(breed)}\n"
-            f"🏭 <b>Инкубатор:</b> {escape(incubator)}\n"
             f"📅 <b>Поставка:</b> {delivery_date}\n"
             f"📦 <b>Кол-во:</b> {qty} шт.\n"
-            f"📞 <b>Телефон:</b> {phone}\n\n"
-            f"Спасибо за заказ! 🙏\n\n"
-            f"Ожидайте подтверждения. Мы свяжемся с вами за день до поставки.",
+            f"📞 <b>Телефон:</b> {escape(customer_phone)}\n\n"
+            f"Спасибо за заказ! Ожидайте подтверждения. Мы свяжемся с вами за день до поставки.",
             reply_markup=get_main_keyboard(),
             parse_mode="HTML"
         )
+
+        # Лог
+        logger.info(f"✅ Заказ на {qty} шт. {breed} от {customer_phone} (админ={is_admin}) успешно создан")
+
     except Exception as e:
-        from logging import getLogger
-        logger = getLogger(__name__)
         logger.error(f"❌ Ошибка при создании заказа: {e}", exc_info=True)
         await safe_reply(update, context, "⚠️ Ошибка. Попробуйте позже.", reply_markup=get_main_keyboard())
     finally:

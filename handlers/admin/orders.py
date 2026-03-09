@@ -608,17 +608,16 @@ async def confirm_manual_approve(update: Update, context: ContextTypes.DEFAULT_T
         return CONFIRM_MANUAL_APPROVE
 
     order_id = int(text)
-    phone = context.user_data.get("client_phone")
     order = await db.execute_read(
-        "SELECT id, breed, quantity, price, date, incubator, phone, user_id FROM orders WHERE id = ? AND phone = ?",
-        (order_id, phone)
+        "SELECT id, breed, quantity, price, date, incubator, phone, user_id, customer_phone, customer_name, created_by_admin "
+        "FROM orders WHERE id = ?", (order_id,)
     )
 
     if not order:
         return await exit_to_admin_menu(
             update,
             context,
-            "❌ Заказ не найден или не принадлежит клиенту.",
+            "❌ Заказ не найден.",
             keys_to_clear=ORDER_KEYS_TO_CLEAR
         )
 
@@ -638,6 +637,7 @@ async def confirm_manual_approve(update: Update, context: ContextTypes.DEFAULT_T
         )
 
     try:
+        # Обновляем статус
         success = await db.execute_write(
             "UPDATE orders SET status = 'active', confirmed_at = datetime('now') WHERE id = ?",
             (order_id,)
@@ -645,27 +645,67 @@ async def confirm_manual_approve(update: Update, context: ContextTypes.DEFAULT_T
         if not success:
             return await exit_to_admin_menu(update, context, "❌ Не удалось подтвердить заказ.")
 
-        await db.trust_phone(order_data["phone"], order_data["user_id"])
-        logger.info(f"🔐 Номер {order_data['phone']} доверен для пользователя {order_data['user_id']}")
+        # === ОПРЕДЕЛЯЕМ, КОМУ ДОВЕРЯТЬ НОМЕР ===
+        target_user_id = None
+        phone_to_trust = order_data["customer_phone"] or order_data["phone"]
 
+        if order_data["created_by_admin"]:
+            # Заказ от имени клиента → ищем пользователя по номеру
+            user_row = await db.execute_read(
+                "SELECT user_id FROM users WHERE phone = ?",
+                (phone_to_trust,)
+            )
+            if user_row:
+                target_user_id = user_row[0]["user_id"]
+                logger.info(f"📞 Найден пользователь {target_user_id} по номеру {phone_to_trust}")
+            else:
+                # Создаём временного пользователя (без доступа к боту, но для доверия)
+                fake_username = f"client_{phone_to_trust.replace('+', '')}"
+                await db.upsert_user(
+                    user_id=abs(hash(phone_to_trust)) % (10**9),  # детерминированный ID
+                    full_name=order_data["customer_name"] or "Клиент",
+                    username=fake_username,
+                    phone=phone_to_trust
+                )
+                # Повторный запрос
+                user_row = await db.execute_read(
+                    "SELECT user_id FROM users WHERE phone = ?",
+                    (phone_to_trust,)
+                )
+                if user_row:
+                    target_user_id = user_row[0]["user_id"]
+                    logger.info(f"🆕 Создан фиктивный пользователь {target_user_id} для {phone_to_trust}")
+        else:
+            # Обычный заказ — привязываем к user_id
+            target_user_id = order_data["user_id"]
+
+        # Доверяем номер тому, кто должен им владеть
+        if target_user_id and phone_to_trust:
+            await db.trust_phone(phone_to_trust, target_user_id)
+            logger.info(f"🔐 Номер {phone_to_trust} доверен для пользователя {target_user_id}")
+
+        # Уведомление клиента
         try:
             from utils.notifications import notify_client_order_confirmed
-            await notify_client_order_confirmed(
-                context=context,
-                user_id=order_data["user_id"],
-                order_id=order_data["id"],
-                breed=order_data["breed"],
-                quantity=order_data["quantity"],
-                date=order_data["date"]
-            )
+            # Отправляем уведомление владельцу заказа (если он в боте)
+            if order_data["user_id"] > 0:
+                await notify_client_order_confirmed(
+                    context=context,
+                    user_id=order_data["user_id"],
+                    order_id=order_data["id"],
+                    breed=order_data["breed"],
+                    quantity=order_data["quantity"],
+                    date=order_data["date"]
+                )
         except Exception as e:
             logger.warning(f"⚠️ Уведомление клиенту не отправлено: {e}")
 
-        logger.info(f"✅ Админ {update.effective_user.id} подтвердил заказ №{order_id} → номер доверен")
+        logger.info(f"✅ Админ {update.effective_user.id} подтвердил заказ №{order_id} → номер доверен клиенту")
         return await exit_to_admin_menu(
             update,
             context,
-            f"✅ Заказ №<b>{order_id}</b> и номер подтверждён!",
+            f"✅ Заказ №<b>{order_id}</b> подтверждён!\n"
+            f"📞 Номер <code>{format_phone(phone_to_trust)}</code> теперь доверенный.",
             keys_to_clear=ORDER_KEYS_TO_CLEAR,
             parse_mode="HTML"
         )
