@@ -1,8 +1,12 @@
 """
 Модуль: Диалог выбора года → детальная статистика + графики.
-Использует утилиты из charts.py.
-✅ Точные кнопки — без clean_button_text
-✅ Обработка команд и выхода
+✅ Показывает:
+   - 🐔 Продажи: только issued
+   - 📦 Заказано: active + pending
+   - ✅ Подтверждено: active + issued
+   - ❌ Отказы: cancelled
+   - 👥 Клиенты: кто делал confirmed заказ
+✅ График с несколькими трендами
 ✅ Работает с group=2
 ✅ Использует единые константы из config/buttons.py
 """
@@ -16,10 +20,8 @@ from telegram.ext import (
 )
 from database.repository import db
 from config.buttons import (
-    # --- FULL-кнопки ---
-    ADMIN_STATS_BUTTON_TEXT,  # ← псевдоним, но указывает на то же значение
-    BTN_BACK_FULL,            # ← обычно = BTN_BACK
-    # --- Клавиатуры ---
+    ADMIN_STATS_BUTTON_TEXT,
+    BTN_BACK_FULL,
     get_admin_main_keyboard,
 )
 from states import SELECT_YEAR
@@ -55,14 +57,10 @@ async def handle_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return ConversationHandler.END
 
-        # ✅ Формируем одну строку: максимум 3 года + "Назад"
+        # Формируем одну строку: максимум 3 года + "Назад"
         max_years = 3
-        keyboard_row = []
-
-        for year in years[:max_years]:
-            keyboard_row.append(KeyboardButton(year))
-
-        keyboard_row.append(KeyboardButton(BTN_BACK_FULL))  # ← в той же строке
+        keyboard_row = [KeyboardButton(year) for year in years[:max_years]]
+        keyboard_row.append(KeyboardButton(BTN_BACK_FULL))
 
         reply_markup = ReplyKeyboardMarkup([keyboard_row], resize_keyboard=True)
 
@@ -98,7 +96,6 @@ async def select_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     if not text.isdigit() or len(text) != 4 or int(text) < 2000 or int(text) > 2100:
-        # ✅ Улучшена клавиатура: только "Назад"
         reply_markup = ReplyKeyboardMarkup([[BTN_BACK_FULL]], resize_keyboard=True)
         await safe_reply(
             update,
@@ -113,8 +110,6 @@ async def select_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await show_yearly_stats(update, context)
 
 
-# === show_yearly_stats, get_*, fallbacks — остаются без изменений ===
-# (они и так хороши)
 async def show_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     year = context.user_data.get('selected_year')
     if not year:
@@ -122,13 +117,28 @@ async def show_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     try:
+        # 1. Продажи по породам — только issued
         breed_sales = await get_breed_sales(year)
-        total_orders = await get_total_orders(year)
+
+        # 2. Заказано: active + pending
+        ordered = await get_ordered_orders(year)
+
+        # 3. Подтверждено: active + issued
+        confirmed = await get_confirmed_orders(year)
+
+        # 4. Отмены
         rejections = await get_rejections(year)
+
+        # 5. Уникальные клиенты (подтверждённые заказы)
         unique_clients = await get_unique_clients(year)
 
+        # 6. Выдано в штуках (issued)
+        issued_qty_data = await get_issued_quantity(year)
+
+        # Формируем сообщение
         message = f"📊 <b>Статистика за {escape(year)}</b>\n\n"
 
+        # 🐔 Продажи по породам
         if breed_sales:
             message += "<b>🐔 Продажи по породам:</b>\n"
             current_month = None
@@ -139,20 +149,35 @@ async def show_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     current_month = month
                 message += f"  • {escape(breed)}: <b>{qty}</b> шт.\n"
         else:
-            message += "🐔 Нет данных о продажах по породам.\n"
+            message += "🐔 Нет данных о продажах.\n"
 
-        if total_orders:
-            message += "\n<b>📦 Общие заказы:</b>\n"
+        # 📥 Заказано (active + pending)
+        if ordered:
+            message += "\n<b>📥 Заказано (ожидает подтверждения):</b>\n"
             prev = 0
-            for month, cnt in total_orders:
+            for month, cnt in ordered:
                 diff = cnt - prev
                 arrow = "⬆️" if diff > 0 else "⬇️" if diff < 0 else "➡️"
                 month_label = _format_month(month)
-                message += f"  • {month_label}: <b>{cnt}</b> {arrow}\n"
+                message += f"  • {month_label}: <b>{cnt}</b> заказов {arrow}\n"
                 prev = cnt
         else:
-            message += "\n📦 Заказы: нет данных\n"
+            message += "\n📥 Заказано: нет данных\n"
 
+        # ✅ Подтверждено (active + issued)
+        if confirmed:
+            message += "\n<b>✅ Подтверждённые заказы:</b>\n"
+            prev = 0
+            for month, cnt in confirmed:
+                diff = cnt - prev
+                arrow = "⬆️" if diff > 0 else "⬇️" if diff < 0 else "➡️"
+                month_label = _format_month(month)
+                message += f"  • {month_label}: <b>{cnt}</b> заказов {arrow}\n"
+                prev = cnt
+        else:
+            message += "\n✅ Подтверждено: нет данных\n"
+
+        # ❌ Отказы
         if rejections:
             message += "\n<b>❌ Отказы:</b>\n"
             prev = 0
@@ -160,11 +185,12 @@ async def show_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 diff = cnt - prev
                 arrow = "⬆️" if diff > 0 else "⬇️" if diff < 0 else "➡️"
                 month_label = _format_month(month)
-                message += f"  • {month_label}: <b>{cnt}</b> {arrow}\n"
+                message += f"  • {month_label}: <b>{cnt}</b> заказов {arrow}\n"
                 prev = cnt
         else:
             message += "\n❌ Отказы: нет данных\n"
 
+        # 👥 Уникальные клиенты
         if unique_clients:
             message += "\n<b>👥 Уникальные клиенты:</b>\n"
             prev = 0
@@ -172,24 +198,38 @@ async def show_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 diff = cnt - prev
                 arrow = "⬆️" if diff > 0 else "⬇️" if diff < 0 else "➡️"
                 month_label = _format_month(month)
-                message += f"  • {month_label}: <b>{cnt}</b> {arrow}\n"
+                message += f"  • {month_label}: <b>{cnt}</b> чел. {arrow}\n"
                 prev = cnt
         else:
             message += "\n👥 Клиенты: нет данных\n"
 
-        total_qty = sum(qty for _, _, qty in breed_sales) if breed_sales else 0
-        total_orders_count = sum(cnt for _, cnt in total_orders) if total_orders else 0
+        # 🚚 Выдано (в штуках)
+        if issued_qty_data:
+            message += "\n<b>🚚 Выдано (реальные продажи, шт):</b>\n"
+            prev = 0
+            for month, qty in issued_qty_data:
+                diff = qty - prev
+                arrow = "⬆️" if diff > 0 else "⬇️" if diff < 0 else "➡️"
+                month_label = _format_month(month)
+                message += f"  • {month_label}: <b>{qty}</b> шт {arrow}\n"
+                prev = qty
+        else:
+            message += "\n🚚 Выдано: нет данных\n"
+
+        # 📈 ИТОГИ
+        total_sold = sum(qty for _, _, qty in breed_sales) if breed_sales else 0
+        total_confirmed = sum(cnt for _, cnt in confirmed) if confirmed else 0
         total_clients = sum(cnt for _, cnt in unique_clients) if unique_clients else 0
 
         message += "\n<b>📈 ИТОГИ:</b>\n"
-        message += f"• Продано кур: <b>{total_qty}</b>\n"
-        message += f"• Всего заказов: <b>{total_orders_count}</b>\n"
+        message += f"• Продано кур: <b>{total_sold}</b>\n"
+        message += f"• Подтверждённых заказов: <b>{total_confirmed}</b>\n"
         if total_clients > 0:
-            avg_orders_per_client = total_orders_count / total_clients
+            avg_orders_per_client = total_confirmed / total_clients
             message += f"• Среднее на клиента: <b>{avg_orders_per_client:.1f}</b>\n"
 
-        if len(total_orders) >= 2:
-            forecast = predict_next_month(total_orders)
+        if len(confirmed) >= 2:
+            forecast = predict_next_month(confirmed)
             message += f"• 🔮 Прогноз заказов: <b>{max(0, round(forecast))}</b>\n"
         if total_clients > 1:
             forecast = predict_next_month(unique_clients)
@@ -197,8 +237,16 @@ async def show_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await safe_reply(update, context, message, parse_mode="HTML")
 
+        # 📊 Отправляем график
         try:
-            buf = await send_charts(breed_sales, total_orders, rejections, unique_clients, year)
+            buf = await send_charts(
+                ordered=ordered,
+                confirmed=confirmed,
+                issued_qty=issued_qty_data,
+                rejections=rejections,
+                unique_clients=unique_clients,
+                year=year
+            )
             if buf:
                 await update.message.reply_photo(photo=buf, caption="📈 Динамика за год")
                 buf.close()
@@ -230,27 +278,42 @@ async def show_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # === Запросы ===
+
 async def get_breed_sales(year: str):
+    """Продажи по породам: только issued"""
     return await db.execute_read("""
         SELECT strftime('%Y-%m', date), breed, SUM(quantity)
         FROM orders 
-        WHERE status = 'active' AND strftime('%Y', date) = ?
+        WHERE status = 'issued' AND strftime('%Y', date) = ?
         GROUP BY 1, 2
         ORDER BY 1
     """, (year,))
 
 
-async def get_total_orders(year: str):
+async def get_ordered_orders(year: str):
+    """Заказано: active + pending"""
     return await db.execute_read("""
         SELECT strftime('%Y-%m', date), COUNT(*)
         FROM orders 
-        WHERE status = 'active' AND strftime('%Y', date) = ?
+        WHERE status IN ('active', 'pending') AND strftime('%Y', date) = ?
+        GROUP BY 1
+        ORDER BY 1
+    """, (year,))
+
+
+async def get_confirmed_orders(year: str):
+    """Подтверждённые: active + issued"""
+    return await db.execute_read("""
+        SELECT strftime('%Y-%m', date), COUNT(*)
+        FROM orders 
+        WHERE status IN ('active', 'issued') AND strftime('%Y', date) = ?
         GROUP BY 1
         ORDER BY 1
     """, (year,))
 
 
 async def get_rejections(year: str):
+    """Отмены"""
     return await db.execute_read("""
         SELECT strftime('%Y-%m', date), COUNT(*)
         FROM orders 
@@ -261,10 +324,22 @@ async def get_rejections(year: str):
 
 
 async def get_unique_clients(year: str):
+    """Уникальные клиенты: кто делал подтверждённые заказы"""
     return await db.execute_read("""
         SELECT strftime('%Y-%m', date), COUNT(DISTINCT phone)
         FROM orders 
-        WHERE strftime('%Y', date) = ?
+        WHERE status IN ('active', 'issued') AND strftime('%Y', date) = ?
+        GROUP BY 1
+        ORDER BY 1
+    """, (year,))
+
+
+async def get_issued_quantity(year: str):
+    """Суммарное количество выданных цыплят по месяцам"""
+    return await db.execute_read("""
+        SELECT strftime('%Y-%m', date), SUM(quantity)
+        FROM orders 
+        WHERE status = 'issued' AND strftime('%Y', date) = ?
         GROUP BY 1
         ORDER BY 1
     """, (year,))
@@ -302,14 +377,12 @@ def get_yearly_stats_handler():
     return ConversationHandler(
         entry_points=[
             MessageHandler(
-                filters.ChatType.PRIVATE
-                & filters.Text([ADMIN_STATS_BUTTON_TEXT]),  # ✅ Работает, если кнопка в интерфейсе
+                filters.ChatType.PRIVATE & filters.Text([ADMIN_STATS_BUTTON_TEXT]),
                 handle_yearly_stats
             )
         ],
         states={
             SELECT_YEAR: [
-                # ✅ Сначала проверяем "Назад", чтобы не попасть в select_year
                 MessageHandler(filters.Text([BTN_BACK_FULL]), fallback_to_main),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, select_year),
             ],
