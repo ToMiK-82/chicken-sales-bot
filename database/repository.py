@@ -225,9 +225,19 @@ class DB:
                 row = await cursor.fetchone()
                 if row is None or row[0] != 'pending':
                     logger.warning("⚠️ Пересоздаём orders с status DEFAULT 'pending'")
+
+                    # Сначала проверим, какие колонки есть в старой таблице
+                    async with self.conn.execute("PRAGMA table_info(orders_backup)") as cursor_old:
+                        old_cols = [c[1] for c in await cursor_old.fetchall()]
+
+                    # Создаём резервную копию
                     await self.conn.executescript('''
                         CREATE TABLE IF NOT EXISTS orders_backup AS SELECT * FROM orders;
                         DROP TABLE orders;
+                    ''')
+
+                    # Создаём новую таблицу
+                    await self.conn.execute('''
                         CREATE TABLE orders (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             user_id INTEGER NOT NULL,
@@ -247,12 +257,23 @@ class DB:
                             created_by_admin INTEGER DEFAULT 0,
                             FOREIGN KEY (user_id) REFERENCES users (user_id)
                         );
-                        INSERT INTO orders SELECT id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at, customer_name, customer_phone, created_by_admin FROM orders_backup;
-                        DROP TABLE orders_backup;
                     ''')
+
+                    # Копируем данные, только если колонка существует в backup
+                    if 'customer_name' in old_cols:
+                        await self.conn.executescript('''
+                            INSERT INTO orders (id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at, customer_name, customer_phone, created_by_admin)
+                            SELECT id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at, customer_name, customer_phone, created_by_admin FROM orders_backup;
+                        ''')
+                    else:
+                        await self.conn.executescript('''
+                            INSERT INTO orders (id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at)
+                            SELECT id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at FROM orders_backup;
+                        ''')
+
                     logger.info("✅ Таблица orders обновлена: status DEFAULT 'pending'")
 
-            # ✅ Добавляем новые поля, если отсутствуют (даже после пересоздания)
+            # ✅ Добавляем новые поля, если отсутствуют
             async with self.conn.execute("PRAGMA table_info(orders)") as cursor:
                 cols = [c[1] for c in await cursor.fetchall()]
 
