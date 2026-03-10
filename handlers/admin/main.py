@@ -5,6 +5,8 @@
 ✅ Группировка: group=0 — команды, group=1 — кнопки, group=2 — fallback (пароль)
 ✅ Список команд при входе
 ✅ Удаление сообщения с паролем — безопасность
+✅ /trust +79123456789 123456789 — помечает номер как доверенный для пользователя
+✅ /untrust +79123456789 — удаляет доверенный статус
 """
 
 from datetime import datetime
@@ -67,7 +69,9 @@ async def start_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🧩 <code>/debug</code> — отладка (вкл: <b>" + ("✅" if debug_mode else "❌") + "</b>)\n"
             "📝 <code>/listadmins</code> — все админы\n"
             "🛠️ <code>/addadmin ID</code> — добавить\n"
-            "🗑️ <code>/rmadmin ID</code> — удалить"
+            "🗑️ <code>/rmadmin ID</code> — удалить\n"
+            "🔐 <code>/trust НОМЕР USER_ID</code> — доверить номер клиенту\n"
+            "🔓 <code>/untrust НОМЕР</code> — снять доверие"
         )
 
         welcome_text = (
@@ -101,7 +105,9 @@ async def start_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🧩 <code>/debug</code> — отладка (вкл: <b>" + ("✅" if debug_mode else "❌") + "</b>)\n"
             "📝 <code>/listadmins</code> — все админы\n"
             "🛠️ <code>/addadmin ID</code> — добавить\n"
-            "🗑️ <code>/rmadmin ID</code> — удалить"
+            "🗑️ <code>/rmadmin ID</code> — удалить\n"
+            "🔐 <code>/trust НОМЕР USER_ID</code> — доверить номер клиенту\n"
+            "🔓 <code>/untrust НОМЕР</code> — снять доверие"
         )
 
         welcome_text = (
@@ -189,7 +195,9 @@ async def handle_admin_password(update: Update, context: ContextTypes.DEFAULT_TY
             "🧩 <code>/debug</code> — отладка (вкл: <b>" + ("✅" if debug_mode else "❌") + "</b>)\n"
             "📝 <code>/listadmins</code> — все админы\n"
             "🛠️ <code>/addadmin ID</code> — добавить\n"
-            "🗑️ <code>/rmadmin ID</code> — удалить"
+            "🗑️ <code>/rmadmin ID</code> — удалить\n"
+            "🔐 <code>/trust НОМЕР USER_ID</code> — доверить номер клиенту\n"
+            "🔓 <code>/untrust НОМЕР</code> — снять доверие"
         )
 
         welcome_text = (
@@ -464,6 +472,103 @@ async def checkstocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await safe_reply(update, context, "❌ Ошибка при проверке данных.")
 
 
+# === НОВАЯ КОМАНДА: /trust ===
+@admin_required
+async def trust_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Помечает номер телефона как доверенный для указанного пользователя.
+    Это даёт клиенту возможность войти по номеру и оформлять крупные заказы.
+
+    Использование: /trust <номер> <user_id>
+    Пример: /trust +79123456789 123456789
+
+    ⚠️ Только для реальных клиентов. Нельзя делать доверенным номер администратора.
+    """
+    if not update.effective_user:
+        return
+
+    admin_id = update.effective_user.id
+    db = context.application.bot_data["db"]
+
+    if not context.args or len(context.args) != 2:
+        await safe_reply(
+            update, context,
+            "📌 Использование:\n"
+            "<code>/trust &lt;номер&gt; &lt;user_id&gt;</code>\n\n"
+            "Пример:\n"
+            "<code>/trust +79123456789 123456789</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    phone = context.args[0].strip()
+    try:
+        target_user_id = int(context.args[1])
+    except ValueError:
+        await safe_reply(update, context, "❌ user_id должен быть числом")
+        return
+
+    # Проверяем, существует ли пользователь
+    user_row = await db.execute_read("SELECT 1 FROM users WHERE user_id = ?", (target_user_id,))
+    if not user_row:
+        await safe_reply(update, context, f"❌ Пользователь с ID <b>{target_user_id}</b> не найден", parse_mode="HTML")
+        return
+
+    # Запрещаем делать доверенным номер админа
+    if await db.is_admin(target_user_id):
+        await safe_reply(update, context, "❌ Нельзя сделать доверенным номер администратора")
+        return
+
+    # Помечаем номер как доверенный
+    try:
+        await db.mark_phone_as_trusted(phone=phone, admin_id=admin_id, user_id=target_user_id)
+        logger.info(f"🔐 Админ {admin_id} пометил номер {phone} как доверенный для {target_user_id}")
+        await safe_reply(
+            update, context,
+            f"✅ Номер <code>{escape(phone)}</code> помечен как доверенный для пользователя <b>{target_user_id}</b>.\n\n"
+            "Теперь клиент сможет войти по этому номеру и получить полный доступ.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при доверии номера {phone} для {target_user_id}: {e}", exc_info=True)
+        await safe_reply(update, context, "❌ Ошибка при сохранении")
+
+
+# === НОВАЯ КОМАНДА: /untrust ===
+@admin_required
+async def untrust_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Удаляет доверенный статус у номера телефона.
+    Клиент больше не сможет использовать этот номер для входа.
+
+    Использование: /untrust <номер>
+    Пример: /untrust +79123456789
+    """
+    if not update.effective_user:
+        return
+
+    admin_id = update.effective_user.id
+    db = context.application.bot_data["db"]
+
+    if not context.args or len(context.args) != 1:
+        await safe_reply(update, context, "📌 Использование: <code>/untrust &lt;номер&gt;</code>", parse_mode="HTML")
+        return
+
+    phone = context.args[0].strip()
+
+    try:
+        await db.unmark_trusted_phone(phone)
+        logger.info(f"🔓 Админ {admin_id} удалил доверенный статус у номера {phone}")
+        await safe_reply(
+            update, context,
+            f"📞 Номер <code>{escape(phone)}</code> больше не доверенный.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при удалении доверенного номера {phone}: {e}", exc_info=True)
+        await safe_reply(update, context, "❌ Ошибка при удалении")
+
+
 # === КНОПКИ: group=1 ===
 @admin_required
 async def handle_admin_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -511,7 +616,9 @@ def register_admin_handlers(app: Application):
     app.add_handler(CommandHandler("addadmin", addadmin_command), group=0)
     app.add_handler(CommandHandler("rmadmin", rmadmin_command), group=0)
     app.add_handler(CommandHandler("listadmins", listadmins_command), group=0)
-    app.add_handler(CommandHandler("checkstocks", checkstocks_command), group=0)  # ✅ Добавлено
+    app.add_handler(CommandHandler("checkstocks", checkstocks_command), group=0)
+    app.add_handler(CommandHandler("trust", trust_command), group=0)
+    app.add_handler(CommandHandler("untrust", untrust_command), group=0)
 
     # Подключаем другие модули
     from .stocks import register_stock_handlers

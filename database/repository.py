@@ -602,6 +602,10 @@ class DB:
 
         await self.upsert_user(user_id, full_name, username, phone)
 
+        # 🔐 Доверяем номер ТОЛЬКО если заказ сделан самим пользователем (не через админа)
+        if not created_by_admin and phone:
+            await self.trust_phone(phone, user_id)
+
         try:
             async with self.conn.execute("SELECT last_insert_rowid()") as cursor:
                 row = await cursor.fetchone()

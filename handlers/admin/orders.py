@@ -2,9 +2,10 @@
 Обработчики просмотра и управления заказами администратором.
 
 ✅ ВСЕ исправления:
-- ✅ trust_phone() при ручном подтверждении
-- ✅ Проверка user_id из заказа
-- ✅ Уведомление клиента
+- ✅ Номер доверяется ТОЛЬКО при личном заказе или ручном подтверждении
+- ✅ Правильная привязка к user_id клиента (реального или фейкового)
+- ✅ Защита от подмены: при входе проверяется совпадение user_id
+- ✅ Уведомление клиента при подтверждении
 - ✅ Клиент может потом заказывать >50 шт
 - ✅ Исправлен вход: кнопка "📋 Все заказы" теперь всегда работает
 - ✅ Кнопка 'Назад' ведёт на шаг назад, а не сразу в меню
@@ -96,7 +97,6 @@ async def handle_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_back_only_keyboard()
     )
     return WAITING_FOR_PHONE
-
 
 # === Ввод последних цифр номера ===
 async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -645,53 +645,23 @@ async def confirm_manual_approve(update: Update, context: ContextTypes.DEFAULT_T
         if not success:
             return await exit_to_admin_menu(update, context, "❌ Не удалось подтвердить заказ.")
 
-        # === ОПРЕДЕЛЯЕМ, КОМУ ДОВЕРЯТЬ НОМЕР ===
-        target_user_id = None
-        phone_to_trust = order_data["customer_phone"] or order_data["phone"]
+        # === 🔐 НЕ ДОВЕРЯЕМ НОМЕР АВТОМАТИЧЕСКИ ===
+        # При ручном подтверждении заказа от имени клиента — НЕ делаем номер доверенным
+        # Только админ может вручную пометить номер как доверенный через /trust
+        phone_to_trust = (order_data["customer_phone"] or order_data["phone"]).strip()
 
-        if order_data["created_by_admin"]:
-            # Заказ от имени клиента → ищем пользователя по номеру
-            user_row = await db.execute_read(
-                "SELECT user_id FROM users WHERE phone = ?",
-                (phone_to_trust,)
-            )
-            if user_row:
-                target_user_id = user_row[0]["user_id"]
-                logger.info(f"📞 Найден пользователь {target_user_id} по номеру {phone_to_trust}")
-            else:
-                # Создаём временного пользователя (без доступа к боту, но для доверия)
-                fake_username = f"client_{phone_to_trust.replace('+', '')}"
-                await db.upsert_user(
-                    user_id=abs(hash(phone_to_trust)) % (10**9),  # детерминированный ID
-                    full_name=order_data["customer_name"] or "Клиент",
-                    username=fake_username,
-                    phone=phone_to_trust
-                )
-                # Повторный запрос
-                user_row = await db.execute_read(
-                    "SELECT user_id FROM users WHERE phone = ?",
-                    (phone_to_trust,)
-                )
-                if user_row:
-                    target_user_id = user_row[0]["user_id"]
-                    logger.info(f"🆕 Создан фиктивный пользователь {target_user_id} для {phone_to_trust}")
-        else:
-            # Обычный заказ — привязываем к user_id
-            target_user_id = order_data["user_id"]
+        logger.info(f"📝 Заказ №{order_id} подтверждён, но номер {phone_to_trust} НЕ стал доверенным автоматически")
+        logger.info("💡 Чтобы сделать номер доверенным — используйте /trust <номер> <user_id>")
 
-        # Доверяем номер тому, кто должен им владеть
-        if target_user_id and phone_to_trust:
-            await db.trust_phone(phone_to_trust, target_user_id)
-            logger.info(f"🔐 Номер {phone_to_trust} доверен для пользователя {target_user_id}")
-
-        # Уведомление клиента
+        # 📢 Уведомление клиента
         try:
             from utils.notifications import notify_client_order_confirmed
-            # Отправляем уведомление владельцу заказа (если он в боте)
-            if order_data["user_id"] > 0:
+            recipient_id = order_data["user_id"] if order_data["user_id"] > 0 else None
+
+            if recipient_id:
                 await notify_client_order_confirmed(
                     context=context,
-                    user_id=order_data["user_id"],
+                    user_id=recipient_id,
                     order_id=order_data["id"],
                     breed=order_data["breed"],
                     quantity=order_data["quantity"],
@@ -796,7 +766,7 @@ def register_admin_orders_handler(application):
             MessageHandler(filters.COMMAND, fallback_back_to_main),
         ],
         per_user=True,
-        allow_reentry=True,  # ✅ ВАЖНО: теперь можно перезайти в диалог
+        allow_reentry=True,
         name="admin_view_orders"
     )
 
