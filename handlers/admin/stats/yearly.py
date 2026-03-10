@@ -222,7 +222,7 @@ async def show_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_clients = sum(cnt for _, cnt in unique_clients) if unique_clients else 0
 
         message += "\n<b>📈 ИТОГИ:</b>\n"
-        message += f"• Продано кур: <b>{total_sold}</b>\n"
+        message += f"• Продано: <b>{total_sold}</b>\n"
         message += f"• Подтверждённых заказов: <b>{total_confirmed}</b>\n"
         if total_clients > 0:
             avg_orders_per_client = total_confirmed / total_clients
