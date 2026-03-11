@@ -128,13 +128,15 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if not client_rows:
             logger.warning(f"👤 Не найдено клиентов с окончанием ...{last_digits}")
-            return await exit_to_admin_menu(
+            await safe_reply(
                 update,
                 context,
-                f"📞 Не найдено клиентов с номером ...<b>{escape(last_digits)}</b>",
-                keys_to_clear=ORDER_KEYS_TO_CLEAR,
+                f"📞 Не найдено клиентов с номером ...<b>{escape(last_digits)}</b>\n\n"
+                "Введите другие цифры или нажмите «Назад».",
+                reply_markup=get_back_only_keyboard(),
                 parse_mode="HTML"
             )
+            return WAITING_FOR_PHONE  # ← ОСТАЁМСЯ В ДИАЛОГЕ!
 
         phones = [row["phone"] for row in client_rows]
         logger.info(f"✅ Найдено {len(phones)} клиентов с окончанием ...{last_digits}")
@@ -150,13 +152,15 @@ async def handle_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
 
             if not orders:
-                return await exit_to_admin_menu(
+                await safe_reply(
                     update,
                     context,
-                    f"📞 У клиента <b>{format_phone(phone)}</b> нет заказов.",
-                    keys_to_clear=ORDER_KEYS_TO_CLEAR,
+                    f"📞 У клиента <b>{format_phone(phone)}</b> нет заказов.\n\n"
+                    "Введите другие цифры или нажмите «Назад».",
+                    reply_markup=get_back_only_keyboard(),
                     parse_mode="HTML"
                 )
+                return WAITING_FOR_PHONE
 
             message = f"📦 <b>Заказы клиента {format_phone(phone)}</b>:\n\n"
             for order in orders:
