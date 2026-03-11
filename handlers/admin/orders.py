@@ -366,7 +366,7 @@ async def confirm_edit_order(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return CONFIRM_EDIT
 
     order_data = order[0]
-    if order_data["status"] != "active":
+    if order_data["status"] not in ("active", "pending"):
         logger.warning(f"❌ Нельзя изменить заказ {order_id}: статус={order_data['status']}")
         await safe_reply(
             update,
@@ -447,7 +447,7 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         keyboard = [
             [BTN_BREED_FULL, BTN_EDIT_QUANTITY_FULL],
             [BTN_INCUBATOR_FULL, BTN_DELIVERY_DATE_FULL],
-            [BTN_BACK_FULL],  # ← Добавляем кнопку "Назад"
+            [BTN_BACK_FULL],
         ]
         await safe_reply(
             update,
@@ -461,7 +461,7 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not field or not order_id:
         return await exit_to_admin_menu(update, context, "❌ Ошибка: начните сначала.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
 
-    # Получаем полный заказ, чтобы знать breed, incubator и date
+    # Получаем полный заказ
     order_row = await db.execute_read(
         "SELECT breed, incubator, quantity, date FROM orders WHERE id = ?", (order_id,)
     )
@@ -493,11 +493,9 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await safe_reply(update, context, "❌ Введите положительное число.")
             return WAITING_EDIT_VALUE
 
-        # Если уменьшаем — разрешаем без проверки
         if new_qty <= current_qty:
             pass
         else:
-            # Только при увеличении проверяем остатки — с привязкой к дате!
             available, current_stock = await check_stock_availability(
                 breed, incubator, delivery_date, new_qty
             )
@@ -528,13 +526,34 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["edit_old_value"] = order_data[field]
     old_val = order_data[field]
 
+    # --- НАЧАЛО: улучшенное сообщение ---
+    field_names = {
+        "breed": "Порода",
+        "quantity": "Количество",
+        "incubator": "Инкубатор",
+        "date": "Дата поставки"
+    }
+    field_rus = field_names.get(field, field.capitalize())
+
+    # Проверка: если значение не изменилось
+    if str(old_val) == str(new_value):
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Значение не изменилось.\n"
+            f"Оставляем: <b>{field_rus}</b> = <code>{old_val}</code>",
+            reply_markup=get_back_only_keyboard(),
+            parse_mode="HTML"
+        )
+        return CONFIRM_EDIT
+
     await safe_reply(
         update,
         context,
         f"🔄 Подтвердите изменение:\n\n"
-        f"🔢 Заказ: <b>#{order_id}</b>\n"
-        f"🔧 Поле: <b>{field.capitalize()}</b>\n"
-        f"➡️ <code>{old_val}</code> → <code>{new_value}</code>\n\n"
+        f"📦 <b>Заказ №{order_id}</b>\n"
+        f"📌 <b>{field_rus}:</b>\n"
+        f"   <code>{old_val}</code> → <code>{new_value}</code>\n\n"
         f"Нажмите ✅ <b>Подтвердить</b>, чтобы внести изменения.",
         reply_markup=get_confirmation_keyboard(),
         parse_mode="HTML"
@@ -587,7 +606,8 @@ async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE)
         order = await db.execute_read("SELECT * FROM orders WHERE id = ?", (order_id,))
         if order:
             from utils.notifications import notify_client_order_updated
-            await notify_client_order_updated(dict(order[0]))
+            await notify_client_order_updated(context=context, order=dict(order[0]))
+
             logger.info(f"✅ Уведомление клиента отправлено: заказ {order_id} обновлён")
 
         return await exit_to_admin_menu(
