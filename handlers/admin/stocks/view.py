@@ -5,6 +5,7 @@
 ✅ Редактирование через 'Изменить' (через ConversationHandler)
 ✅ Нет дублирования сообщений
 ✅ Группа: group=2
+✅ Только актуальные партии (дата >= сегодня)
 """
 
 from telegram import Update
@@ -50,7 +51,7 @@ def _format_date(date_str: str) -> str:
         return date_str
 
 
-# === Поиск партий ===
+# === Поиск партий (только актуальные) ===
 async def _search_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     search_query = f"%{query}%"
     try:
@@ -59,6 +60,7 @@ async def _search_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE, que
             SELECT breed, incubator, date, quantity, available_quantity, price
             FROM stocks
             WHERE quantity > 0
+              AND date(date) >= date('now')  -- Только будущие или сегодняшние поставки
               AND (breed LIKE ? OR incubator LIKE ? OR date LIKE ?)
             ORDER BY date
             """,
@@ -73,7 +75,7 @@ async def _search_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE, que
         await exit_to_admin_menu(update, context, f"🔍 Ничего не найдено: <b>{escape(query)}</b>")
         return END
 
-    message = f"🔍 <b>Результаты по «{escape(query)}»:</b>\n\n"
+    message = f"🔍 <b>Результаты по «{escape(query)}»</b> (только будущие поставки):\n\n"
     for stock in stocks:
         breed, incubator, date, qty, avail, price = stock
         qty_int = int(qty or 0)
@@ -109,7 +111,7 @@ async def _search_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE, que
     return END
 
 
-# === Главный экран ===
+# === Главный экран (только актуальные партии) ===
 async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin(update, context):
         await exit_to_admin_menu(update, context, "❌ У вас нет доступа.")
@@ -130,7 +132,13 @@ async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         stocks = await db.execute_read(
-            "SELECT breed, incubator, date, quantity, available_quantity, price FROM stocks WHERE quantity > 0 ORDER BY date"
+            """
+            SELECT breed, incubator, date, quantity, available_quantity, price 
+            FROM stocks 
+            WHERE quantity > 0 
+              AND date(date) >= date('now')  -- Только будущие или сегодняшние поставки
+            ORDER BY date
+            """
         )
     except Exception as e:
         logger.error(f"❌ Ошибка при загрузке остатков: {e}", exc_info=True)
@@ -138,11 +146,11 @@ async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return END
 
     if not stocks:
-        await exit_to_admin_menu(update, context, "📭 Нет активных партий.")
+        await exit_to_admin_menu(update, context, "📭 Нет активных партий на ближайшие даты.")
         return END
 
     message = (
-        "📦 <b>Текущие остатки:</b>\n\n"
+        "📦 <b>Текущие остатки</b> (только будущие поставки)\n\n"
         "🔍 Чтобы найти — введите: <code>поиск &lt;слово&gt;</code>\n\n"
     )
     for stock in stocks:
@@ -251,7 +259,6 @@ def register_stock_view_handler(application):
         fallbacks=[
             # ✅ Только команды завершают диалог
             MessageHandler(filters.COMMAND, fallback_to_main_view),
-            # ❌ УДАЛЁН: MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_any_text_view)
         ],
         per_user=True,
         allow_reentry=True,
