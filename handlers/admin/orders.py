@@ -563,6 +563,7 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # === Финальное подтверждение ===
+# === Финальное подтверждение ===
 async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
     logger.info(f"✅ [confirm_edit_final] Подтверждение: '{text}'")
@@ -602,22 +603,67 @@ async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await exit_to_admin_menu(update, context, "❌ Ошибка данных.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
 
     try:
-        await db.execute_write(f"UPDATE orders SET {field} = ? WHERE id = ?", (new_value, order_id))
-        order = await db.execute_read("SELECT * FROM orders WHERE id = ?", (order_id,))
-        if order:
-            from utils.notifications import notify_client_order_updated
-            await notify_client_order_updated(context=context, order=dict(order[0]))
+        # Получаем старый заказ
+        old_order = await db.execute_read("SELECT * FROM orders WHERE id = ?", (order_id,))
+        if not old_order:
+            return await exit_to_admin_menu(update, context, "❌ Заказ не найден.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
+        old_order = dict(old_order[0])
+        old_qty = int(old_order["quantity"])
 
+        # Обновляем поле
+        await db.execute_write(f"UPDATE orders SET {field} = ? WHERE id = ?", (new_value, order_id))
+
+        # Если меняем количество — корректируем остатки
+        if field == "quantity":
+            new_qty = int(new_value)
+            diff = new_qty - old_qty  # + = уменьшаем остаток, - = возвращаем
+            if diff != 0:
+                result = await db.execute_write(
+                    """
+                    UPDATE stocks 
+                    SET available_quantity = available_quantity - ?
+                    WHERE breed = ? AND incubator = ? AND date = ?
+                    """,
+                    (diff, old_order["breed"], old_order["incubator"], old_order["date"])
+                )
+                if result:
+                    logger.info(f"🔁 Обновлён остаток: {diff:+d} шт для {old_order['breed']} | {old_order['incubator']} | {old_order['date']}")
+                else:
+                    logger.warning(f"⚠️ Не удалось обновить остатки в stocks для заказа {order_id}")
+
+        # Отправляем уведомление клиенту
+        updated_order = await db.execute_read("SELECT * FROM orders WHERE id = ?", (order_id,))
+        if updated_order:
+            from utils.notifications import notify_client_order_updated
+            await notify_client_order_updated(context=context, order=dict(updated_order[0]))
             logger.info(f"✅ Уведомление клиента отправлено: заказ {order_id} обновлён")
+
+        # Понятное сообщение об успехе
+        if updated_order:
+            uo = updated_order[0]
+            breed = escape(uo["breed"])
+            incubator = escape(uo["incubator"]) if uo["incubator"] else "—"
+            date = format_date_display(uo["date"])
+            qty = uo["quantity"]
+        else:
+            breed = incubator = date = qty = "?"
+
+        success_msg = (
+            f"✅ <b>Заказ №{order_id} обновлён</b>\n\n"
+            f"📌 <b>Порода:</b> {breed}\n"
+            f"🏭 <b>Инкубатор:</b> {incubator}\n"
+            f"📅 <b>Поставка:</b> {date}\n"
+            f"📦 <b>Количество:</b> {qty} шт"
+        )
 
         return await exit_to_admin_menu(
             update,
             context,
-            f"✅ Заказ №<b>{order_id}</b> обновлён.\n"
-            f"<b>{field.capitalize()}</b>: → <code>{escape(str(new_value))}</code>",
+            success_msg,
             keys_to_clear=ORDER_KEYS_TO_CLEAR,
             parse_mode="HTML"
         )
+
     except Exception as e:
         logger.error(f"❌ Ошибка при обновлении заказа {order_id}: {e}", exc_info=True)
         return await exit_to_admin_menu(update, context, "❌ Ошибка при сохранении.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
