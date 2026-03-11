@@ -378,11 +378,13 @@ async def confirm_edit_order(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return CONFIRM_EDIT
 
     context.user_data["edit_order_id"] = order_id
-    logger.info(f"✅ Редактирование заказа {order_id} начато")
+    context.user_data["edit_order_date"] = order_data["date"]  # ← ДОБАВЛЕНО: сохраняем дату
+    logger.info(f"✅ Редактирование заказа {order_id} начато (дата: {order_data['date']})")
 
     keyboard = [
         [BTN_BREED_FULL, BTN_EDIT_QUANTITY_FULL],
         [BTN_INCUBATOR_FULL, BTN_DELIVERY_DATE_FULL],
+        [BTN_BACK_FULL],  # ← Добавлено: кнопка "Назад"
     ]
 
     await safe_reply(
@@ -445,6 +447,7 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         keyboard = [
             [BTN_BREED_FULL, BTN_EDIT_QUANTITY_FULL],
             [BTN_INCUBATOR_FULL, BTN_DELIVERY_DATE_FULL],
+            [BTN_BACK_FULL],  # ← Добавляем кнопку "Назад"
         ]
         await safe_reply(
             update,
@@ -458,11 +461,19 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not field or not order_id:
         return await exit_to_admin_menu(update, context, "❌ Ошибка: начните сначала.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
 
-    order = await db.execute_read("SELECT breed, incubator, quantity FROM orders WHERE id = ?", (order_id,))
-    if not order:
+    # Получаем полный заказ, чтобы знать breed, incubator и date
+    order_row = await db.execute_read(
+        "SELECT breed, incubator, quantity, date FROM orders WHERE id = ?", (order_id,)
+    )
+    if not order_row:
         return await exit_to_admin_menu(update, context, "❌ Заказ не найден.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
 
-    current_order = order[0]
+    order_data = order_row[0]
+    current_qty = int(order_data["quantity"])
+    breed = order_data["breed"]
+    incubator = order_data["incubator"]
+    delivery_date = order_data["date"]
+
     new_value = text.strip()
 
     if field == "breed":
@@ -481,20 +492,29 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not new_value.isdigit() or (new_qty := int(new_value)) <= 0:
             await safe_reply(update, context, "❌ Введите положительное число.")
             return WAITING_EDIT_VALUE
-        available, current_stock = await check_stock_availability(
-            current_order["breed"], current_order["incubator"], new_qty
-        )
-        if not available:
-            await safe_reply(
-                update,
-                context,
-                f"❌ Недостаточно остатков.\n"
-                f"📦 В наличии: {current_stock} шт.\n"
-                f"🛒 Новое кол-во: {new_qty} шт.\n\n"
-                f"Нельзя увеличить заказ.",
-                reply_markup=get_back_only_keyboard()
+
+        # Если уменьшаем — разрешаем без проверки
+        if new_qty <= current_qty:
+            pass
+        else:
+            # Только при увеличении проверяем остатки — с привязкой к дате!
+            available, current_stock = await check_stock_availability(
+                breed, incubator, delivery_date, new_qty
             )
-            return WAITING_EDIT_VALUE
+            if not available:
+                await safe_reply(
+                    update,
+                    context,
+                    f"❌ Недостаточно остатков.\n"
+                    f"📌 Пара: <b>{escape(breed)}</b> + <b>{escape(incubator)}</b>\n"
+                    f"📅 Поставка: <b>{format_date_display(delivery_date)}</b>\n"
+                    f"📦 В наличии: <b>{current_stock}</b> шт\n"
+                    f"🛒 Новое кол-во: <b>{new_qty}</b> шт\n\n"
+                    f"Нельзя увеличить заказ.",
+                    parse_mode="HTML",
+                    reply_markup=get_back_only_keyboard()
+                )
+                return WAITING_EDIT_VALUE
         new_value = new_qty
 
     elif field == "date":
@@ -505,8 +525,8 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         new_value = parsed
 
     context.user_data["edit_new_value"] = new_value
-    context.user_data["edit_old_value"] = current_order[field]
-    old_val = current_order[field]
+    context.user_data["edit_old_value"] = order_data[field]
+    old_val = order_data[field]
 
     await safe_reply(
         update,

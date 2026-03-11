@@ -103,9 +103,10 @@ async def cancel_order_by_id(order_id: int, context=None, user_id=None, admin_in
         return False
 
 
-async def check_stock_availability(breed: str, incubator: str, requested_qty: int) -> tuple[bool, int]:
+async def check_stock_availability(breed: str, incubator: str, delivery_date: str, requested_qty: int) -> tuple[bool, int]:
     """
     Проверяет, достаточно ли остатков для заказа.
+    Учитывает: порода, инкубатор, дата поставки.
     Возвращает: (достаточно: bool, текущий_остаток: int)
     """
     try:
@@ -113,14 +114,17 @@ async def check_stock_availability(breed: str, incubator: str, requested_qty: in
             """
             SELECT available_quantity 
             FROM stocks 
-            WHERE breed = ? AND incubator = ? AND available_quantity > 0
+            WHERE breed = ? 
+              AND incubator = ? 
+              AND date = ?
+              AND available_quantity > 0
             """,
-            (breed, incubator)
+            (breed, incubator, delivery_date)
         )
         current_stock = row[0]["available_quantity"] if row else 0
         return current_stock >= requested_qty, current_stock
     except Exception as e:
-        logger.error(f"❌ Ошибка проверки остатков для {breed} в {incubator}: {e}")
+        logger.error(f"❌ Ошибка проверки остатков для {breed} в {incubator} на {delivery_date}: {e}")
         return False, 0
 
 
