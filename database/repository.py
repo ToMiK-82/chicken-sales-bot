@@ -217,62 +217,6 @@ class DB:
                 await self.conn.execute("ALTER TABLE orders ADD COLUMN confirmed_at TIMESTAMP")
                 logger.info("✅ Миграция: добавлен confirmed_at в orders")
 
-            # ✅ Проверка и исправление DEFAULT для status
-            if 'status' in cols:
-                cursor = await self.conn.execute(
-                    "SELECT dflt_value FROM pragma_table_info('orders') WHERE name = 'status'"
-                )
-                row = await cursor.fetchone()
-                if row is None or row[0] != 'pending':
-                    logger.warning("⚠️ Пересоздаём orders с status DEFAULT 'pending'")
-
-                    # Сначала проверим, какие колонки есть в старой таблице
-                    async with self.conn.execute("PRAGMA table_info(orders_backup)") as cursor_old:
-                        old_cols = [c[1] for c in await cursor_old.fetchall()]
-
-                    # Создаём резервную копию
-                    await self.conn.executescript('''
-                        CREATE TABLE IF NOT EXISTS orders_backup AS SELECT * FROM orders;
-                        DROP TABLE orders;
-                    ''')
-
-                    # Создаём новую таблицу
-                    await self.conn.execute('''
-                        CREATE TABLE orders (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            user_id INTEGER NOT NULL,
-                            phone TEXT NOT NULL,
-                            breed TEXT NOT NULL,
-                            date DATE NOT NULL,
-                            quantity INTEGER NOT NULL,
-                            price REAL NOT NULL,
-                            stock_id INTEGER NOT NULL,
-                            incubator TEXT,
-                            status TEXT NOT NULL DEFAULT 'pending',
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            confirmed_at TIMESTAMP,
-                            customer_name TEXT,
-                            customer_phone TEXT,
-                            created_by_admin INTEGER DEFAULT 0,
-                            FOREIGN KEY (user_id) REFERENCES users (user_id)
-                        );
-                    ''')
-
-                    # Копируем данные, только если колонка существует в backup
-                    if 'customer_name' in old_cols:
-                        await self.conn.executescript('''
-                            INSERT INTO orders (id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at, customer_name, customer_phone, created_by_admin)
-                            SELECT id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at, customer_name, customer_phone, created_by_admin FROM orders_backup;
-                        ''')
-                    else:
-                        await self.conn.executescript('''
-                            INSERT INTO orders (id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at)
-                            SELECT id, user_id, phone, breed, date, quantity, price, stock_id, incubator, status, created_at, updated_at, confirmed_at FROM orders_backup;
-                        ''')
-
-                    logger.info("✅ Таблица orders обновлена: status DEFAULT 'pending'")
-
             # ✅ Добавляем новые поля, если отсутствуют
             async with self.conn.execute("PRAGMA table_info(orders)") as cursor:
                 cols = [c[1] for c in await cursor.fetchall()]
