@@ -17,7 +17,7 @@ import logging
 import os
 from datetime import datetime
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, Color
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import asyncio
 from telegram.error import NetworkError, TimedOut
 from collections import defaultdict
@@ -45,6 +45,7 @@ STATUS_TEXT = {
 # Статусы, которые считаются закрытыми (не включаем в выгрузку)
 CLOSED_STATUSES = {"issued", "cancelled"}
 
+
 @admin_required
 async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выгружает заказы в XLSX, группируя по дате поставки"""
@@ -52,8 +53,9 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     progress_msg = await effective_message.reply_text("⏳ Подготовка выгрузки...")
 
+    filepath = None  # Чтобы было доступно в finally
     try:
-        # Получаем все заказы (без фильтрации по статусам)
+        # Получаем все заказы
         rows = await db.execute_read("""
             SELECT id, breed, incubator, date, quantity, price, phone, status, created_at
             FROM orders ORDER BY created_at DESC
@@ -63,17 +65,14 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await effective_message.reply_text("❌ Нет заказов для выгрузки.")
             return
 
-        # Группируем заказы по дате поставки (поле date)
+        # Группируем заказы по дате поставки
         grouped = defaultdict(list)
         for row in rows:
-            # Игнорируем закрытые заказы
-            status = row[7]  # status на позиции 7
+            status = row[7]
             if status in CLOSED_STATUSES:
                 continue
 
-            # Получаем дату поставки (если есть)
-            date_str = row[3] or ""  # date
-            # Извлекаем только дату (до пробела)
+            date_str = row[3] or ""
             delivery_date = date_str.split()[0] if date_str else "Без даты"
             grouped[delivery_date].append(row)
 
@@ -81,12 +80,13 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await effective_message.reply_text("❌ Нет открытых заказов для выгрузки.")
             return
 
+        total_count = sum(len(orders) for orders in grouped.values())
+        logger.info(f"📊 Подготовлено {total_count} заказов для экспорта")
+
         # Создаём книгу Excel
         wb = Workbook()
-        # Удаляем стандартный лист (создадим свои)
         wb.remove(wb.active)
 
-        # Общие стили
         header_font = Font(bold=True, color="FFFFFF")
         header_fill = PatternFill(start_color="2E74B5", end_color="2E74B5", fill_type="solid")
         header_alignment = Alignment(horizontal="center", vertical="center")
@@ -98,13 +98,10 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         headers = ["Номер", "Порода", "Инкубатор", "Поставка", "Количество", "Цена, ₽", "Сумма, ₽", "Телефон", "Статус", "Создан"]
 
-        # Для каждой даты создаём отдельный лист
         for delivery_date, orders in grouped.items():
-            # Название листа: дата (до 31 символа)
             sheet_title = delivery_date[:31] if delivery_date else "Без даты"
             ws = wb.create_sheet(title=sheet_title)
 
-            # Заголовки
             ws.append(headers)
             for col_num, _ in enumerate(headers, 1):
                 cell = ws.cell(row=1, column=col_num)
@@ -113,7 +110,6 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cell.alignment = header_alignment
                 cell.border = thin_border
 
-            # Заполняем заказами
             for row in orders:
                 order_id, breed, incubator, date, qty, price, phone, status, created_at = row
 
@@ -152,7 +148,6 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     created_date
                 ])
 
-                # Применяем цвет фона для строки в зависимости от статуса
                 row_num = ws.max_row
                 fill_color = STATUS_COLORS.get(status)
                 if fill_color:
@@ -160,7 +155,6 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         cell = ws.cell(row=row_num, column=col_num)
                         cell.fill = fill_color
 
-            # Форматирование столбцов
             column_widths = {
                 'A': 8,   # Номер
                 'B': 15,  # Порода
@@ -176,17 +170,14 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for col_letter, width in column_widths.items():
                 ws.column_dimensions[col_letter].width = width
 
-            # Формат суммы (колонка G)
             for row_num in range(2, ws.max_row + 1):
                 cell = ws[f'G{row_num}']
                 cell.number_format = currency_format
 
-            # Границы для всех ячеек
             for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=10):
                 for cell in row:
                     cell.border = thin_border
 
-        # Сохраняем файл
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"orders_export_{timestamp}.xlsx"
         filepath = os.path.join(EXPORTS_DIR, filename)
@@ -197,7 +188,8 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size = os.path.getsize(filepath)
         if file_size > 50 * 1024 * 1024:
             await effective_message.reply_text("❌ Файл слишком большой для отправки в Telegram.")
-            os.remove(filepath)
+            # Не удаляем — пусть админ сам проверит
+            logger.warning(f"⚠️ Файл слишком большой: {file_size} байт → {filepath}")
             return
 
         sent = False
@@ -208,7 +200,8 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         document=f,
                         filename=f"Заказы_{timestamp[:8]}.xlsx",
                         caption="📦 <b>Выгрузка заказов (открытые)</b>\n"
-                                f"📊 Всего заказов: {sum(len(orders) for orders in grouped.values())}\n"
+                                f"📊 Всего заказов: {total_count}\n"
+                                f"🚫 Исключены: выданные и отменённые\n"
                                 f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}",
                         parse_mode="HTML"
                     )
@@ -225,25 +218,26 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not sent:
             await effective_message.reply_text("❌ Не удалось отправить файл — ошибка сети.")
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка при экспорте: {e}", exc_info=True)
-        await effective_message.reply_text("❌ Не удалось создать выгрузку.")
-
-    finally:
-        # Удаляем сообщение "Подготовка..."
-        try:
-            await progress_msg.delete()
-        except Exception as e:
-            logger.debug(f"⚠️ Не удалось удалить сообщение 'Подготовка...': {e}")
-
-        # Удаляем временный файл
-        if 'filepath' in locals() and os.path.exists(filepath):
+            logger.warning(f"⚠️ Экспорт не отправлен, файл сохранён: {filepath}")
+        else:
+            # Только при успехе — удаляем
             try:
                 os.remove(filepath)
                 logger.info(f"🗑️ Временный файл удалён: {filepath}")
             except Exception as e:
-                logger.warning(f"⚠️ Не удалось удалить файл: {e}")
+                logger.warning(f"⚠️ Не удалось удалить файл после отправки: {e}")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка при экспорте: {e}", exc_info=True)
+        await effective_message.reply_text("❌ Не удалось создать выгрузку.")
+        return
+
+    finally:
+        # Удаляем только сообщение "Подготовка..."
+        try:
+            await progress_msg.delete()
+        except Exception as e:
+            logger.debug(f"⚠️ Не удалось удалить сообщение 'Подготовка...': {e}")
 
 
 def register_export_handler(application):

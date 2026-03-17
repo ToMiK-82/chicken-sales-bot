@@ -385,14 +385,20 @@ async def handle_edit_stock_date(update: Update, context: ContextTypes.DEFAULT_T
             await fallback_to_main(update, context)
             return ConversationHandler.END
 
+    # Приводим к единому формату
     text = text.replace('.', '-').replace('/', '-')
     try:
         parsed = datetime.strptime(text, "%d-%m-%Y")
         if parsed.date() < date.today():
             await safe_reply(update, context, "❌ Дата не может быть в прошлом.")
             return EDIT_STOCK_DATE
-        formatted = parsed.strftime("%d-%m-%Y")
-        context.user_data['edit_date'] = formatted
+
+        # Сохраняем в ISO формате для БД
+        iso_date = parsed.strftime("%Y-%m-%d")
+        display_date = parsed.strftime("%d-%m-%Y")
+
+        context.user_data['edit_date'] = iso_date
+
     except ValueError:
         await safe_reply(update, context, "❌ Формат: ДД-ММ-ГГГГ")
         return EDIT_STOCK_DATE
@@ -405,19 +411,26 @@ async def handle_edit_stock_date(update: Update, context: ContextTypes.DEFAULT_T
 
     breed, old_date = row[0]
     breed_safe = escape(breed)
+
+    # Форматируем старую дату
+    try:
+        old_display = datetime.strptime(old_date, "%Y-%m-%d").strftime("%d-%m-%Y") if old_date else old_date
+    except:
+        old_display = old_date
+
     await safe_reply(
         update,
         context,
         f"✅ Подтвердите изменение:\n\n"
         f"🐔 <b>{breed_safe}</b>\n"
-        f"📅 Дата: <b>{old_date}</b> → <b>{formatted}</b>\n\n"
+        f"📅 Дата: <b>{old_display}</b> → <b>{display_date}</b>\n\n"
         f"Нажмите ✅ Подтвердить.",
         reply_markup=get_confirmation_keyboard(),
         parse_mode="HTML"
     )
     history.append('CONFIRM_DATE')
     context.user_data['HANDLED'] = True
-    return CONFIRM_EDIT_STOCK
+    return EDIT_STOCK_DATE
 
 
 # === 4. Подтверждение изменений ===

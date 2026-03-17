@@ -1,4 +1,3 @@
-# utils/archive.py
 """
 Модуль для автоматического архивирования старых партий.
 ✅ Отмена заказов
@@ -75,11 +74,13 @@ async def auto_archive_old_stocks(context):
                         await safe_reply(
                             None,
                             context,
-                            f"❌ Ваш заказ на {qty} шт. {escape(breed)} отменён: поставка прошла.\n"
-                            f"Партия от {stock_date} больше недоступна.",
-                            reply_markup=None,  # можно подтянуть из bot_data
+                            f"❌ Ваш заказ на <b>{qty}</b> шт. <i>{escape(breed)}</i> отменён.\n"
+                            f"Партия от <code>{stock_date}</code> больше недоступна.\n"
+                            "Спасибо за понимание! 🙏",
+                            reply_markup=None,
                             disable_cooldown=True,
-                            chat_id=user_id
+                            chat_id=user_id,
+                            parse_mode=ParseMode.HTML
                         )
 
                         logger.info(f"🔁 Отменён заказ {order_id} (пользователь {user_id}) на партию {stock_id}")

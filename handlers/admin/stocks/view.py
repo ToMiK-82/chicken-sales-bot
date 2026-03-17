@@ -51,6 +51,14 @@ def _format_date(date_str: str) -> str:
         return date_str
 
 
+def _format_price(value) -> str:
+    """Форматирует цену с пробелами: 123456 → 123 456"""
+    try:
+        return f"{int(float(value)):,}".replace(",", " ")
+    except (TypeError, ValueError):
+        return "0"
+
+
 # === Поиск партий (только актуальные) ===
 async def _search_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     search_query = f"%{query}%"
@@ -60,7 +68,7 @@ async def _search_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE, que
             SELECT breed, incubator, date, quantity, available_quantity, price
             FROM stocks
             WHERE quantity > 0
-              AND date(date) >= date('now')  -- Только будущие или сегодняшние поставки
+              AND date(date) >= date('now')
               AND (breed LIKE ? OR incubator LIKE ? OR date LIKE ?)
             ORDER BY date
             """,
@@ -81,10 +89,7 @@ async def _search_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE, que
         qty_int = int(qty or 0)
         if qty_int <= 0:
             continue
-        try:
-            price_int = int(float(price or 0))
-        except (TypeError, ValueError):
-            price_int = 0
+        price_formatted = _format_price(price)
 
         delivery_date = _format_date(date)
         breed_safe = escape(breed)
@@ -96,7 +101,7 @@ async def _search_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE, que
             f"📦 <b>Начально:</b> {qty_int} шт.\n"
             f"📅 <b>Поставка:</b> {delivery_date}\n"
             f"🟢 <b>Доступно:</b> {int(avail or 0)} шт.\n"
-            f"💰 <b>Цена:</b> {price_int} руб.\n"
+            f"💰 <b>Цена:</b> {price_formatted} руб.\n"
             f"{SEPARATOR}"
         )
 
@@ -117,18 +122,15 @@ async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await exit_to_admin_menu(update, context, "❌ У вас нет доступа.")
         return END
 
+    if not update.effective_message or not update.effective_message.text:
+        await exit_to_admin_menu(update, context, "❌ Не удалось прочитать сообщение.")
+        return END
+
     text = update.effective_message.text.strip()
     user_id = update.effective_user.id
 
     logger.info(f"Админ {user_id} запросил 'Остатки'")
     log_action(user_id, "Кнопка", "Остатки")
-
-    if text.lower().startswith("поиск "):
-        query = text[6:].strip()
-        if not query:
-            await exit_to_admin_menu(update, context, "❌ Укажите слово для поиска.")
-            return END
-        return await _search_stocks(update, context, query)
 
     try:
         stocks = await db.execute_read(
@@ -136,7 +138,7 @@ async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
             SELECT breed, incubator, date, quantity, available_quantity, price 
             FROM stocks 
             WHERE quantity > 0 
-              AND date(date) >= date('now')  -- Только будущие или сегодняшние поставки
+              AND date(date) >= date('now')
             ORDER BY date
             """
         )
@@ -158,10 +160,7 @@ async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
         qty_int = int(qty or 0)
         if qty_int <= 0:
             continue
-        try:
-            price_int = int(float(price or 0))
-        except (TypeError, ValueError):
-            price_int = 0
+        price_formatted = _format_price(price)
 
         delivery_date = _format_date(date)
         breed_safe = escape(breed)
@@ -173,7 +172,7 @@ async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📦 <b>Начально:</b> {qty_int} шт.\n"
             f"📅 <b>Поставка:</b> {delivery_date}\n"
             f"🟢 <b>Доступно:</b> {int(avail or 0)} шт.\n"
-            f"💰 <b>Цена:</b> {price_int} руб.\n"
+            f"💰 <b>Цена:</b> {price_formatted} руб.\n"
             f"{SEPARATOR}"
         )
 
@@ -191,11 +190,14 @@ async def start_stock_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Обработка действий ===
 async def handle_stock_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_message or not update.effective_message.text:
+        return await fallback_to_main_view(update, context)
+
     text = update.effective_message.text.strip()
 
     # 🔥 КРИТИЧЕСКАЯ ПРОВЕРКА: если мы не в этом диалоге — выходим
     if context.user_data.get("current_conversation") != "stock_view":
-        return END  # ✅ Явно завершаем, а не просто return
+        return END
 
     if text == BTN_BACK_FULL:
         await exit_to_admin_menu(
@@ -204,7 +206,7 @@ async def handle_stock_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             "🚪 Вы вышли из просмотра остатков.",
             keys_to_clear=STOCK_VIEW_KEYS
         )
-        return END  # ✅ Явное завершение диалога
+        return END
 
     if text.lower().startswith("поиск "):
         query = text[6:].strip()
@@ -245,19 +247,15 @@ def register_stock_view_handler(application):
                 filters.ChatType.PRIVATE & filters.Text([ADMIN_STOCKS_BUTTON_TEXT]),
                 start_stock_view
             ),
-            MessageHandler(
-                filters.ChatType.PRIVATE & filters.Regex(r"^поиск .+"),
-                start_stock_view
-            ),
         ],
         states={
             VIEW_STOCKS: [
                 MessageHandler(filters.Text([BTN_BACK_FULL]), handle_stock_action),
+                MessageHandler(filters.Regex(r"^поиск .+"), handle_stock_action),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_stock_action),
             ],
         },
         fallbacks=[
-            # ✅ Только команды завершают диалог
             MessageHandler(filters.COMMAND, fallback_to_main_view),
         ],
         per_user=True,

@@ -324,7 +324,9 @@ class DB:
             async with self.conn.cursor() as cursor:
                 await cursor.execute(query, params)
             await self.conn.commit()
-            # Для UPDATE/DELETE возвращаем True только если строки были изменены
+             # 🔥 Гарантируем, что изменения записаны в .db
+            await self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+
             if query.strip().upper().startswith(("UPDATE", "DELETE")):
                 return cursor.rowcount > 0
             return True

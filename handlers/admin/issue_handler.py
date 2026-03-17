@@ -16,6 +16,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
 import logging
 from datetime import datetime
 from html import escape
@@ -36,7 +37,8 @@ from config.buttons import (
     get_confirmation_keyboard,
     get_back_only_keyboard,
 )
-from states import (  # ✅ Централизованные состояния
+from states import (
+    # ✅ Централизованные состояния
     CHOOSE_ISSUE_METHOD,
     WAITING_ISSUE_ID,
     WAITING_BATCH_DATE,
@@ -44,7 +46,6 @@ from states import (  # ✅ Централизованные состояния
     CHOOSE_ORDER_ID,
     CONFIRM_ISSUE_FINAL,
 )
-
 from utils.admin_helpers import check_admin, exit_to_admin_menu
 from utils.erp import send_to_1c  # ← обновлённая версия
 from utils.notifications import notify_client_issue
@@ -68,7 +69,6 @@ KEYBOARD_METHOD = ReplyKeyboardMarkup(
     one_time_keyboard=True
 )
 
-
 # === Утилита: парсинг даты с валидацией ===
 def parse_date_input(date_str: str) -> str | None:
     date_str = date_str.strip()
@@ -82,7 +82,6 @@ def parse_date_input(date_str: str) -> str | None:
             continue
     return None
 
-
 # === Утилита: форматирование даты для вывода ===
 def format_date_display(date_str: str) -> str:
     """Преобразует YYYY-MM-DD → DD-MM-YYYY"""
@@ -92,28 +91,31 @@ def format_date_display(date_str: str) -> str:
     except:
         return date_str
 
-
 # === Утилита: формат вывода заказа как карточки ===
 def format_order_card(order: dict) -> str:
     """Форматирует заказ как красивую карточку"""
-    total_price = order["quantity"] * order["price"]
+    try:
+        qty = int(order["quantity"])
+        price = float(order["price"])
+        total_price = qty * price
+    except (TypeError, ValueError):
+        total_price = "—"
+
     return (
         f"1. 🐔 <b>{escape(order['breed'])}</b> | 🏷️{order['id']}\n"
         f"📅 Поставка: <b>{format_date_display(order['date'])}</b>\n"
         f"🕒 Создан: <b>{format_date_display(order['created_at'])}</b>\n"
-        f"📦 {order['quantity']} шт. × {order['price']} руб. = <b>{total_price}</b> руб.\n"
+        f"📦 {qty} шт. × {int(price)} руб. = <b>{total_price}</b> руб.\n"
         f"📞 Телефон: <b>{format_phone(order['phone'])}</b>\n"
         f"──────────────────"
     )
 
-
 # === Обработчики ===
-
 async def start_issue_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin(update, context):
         logger.warning(f"❌ Доступ запрещён: user_id={update.effective_user.id}")
         return await exit_to_admin_menu(update, context, "❌ Доступ запрещён.")
-    
+
     logger.info(f"👤 Админ {update.effective_user.id} начал выдачу")
     await safe_reply(
         update,
@@ -128,7 +130,6 @@ async def start_issue_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def choose_issue_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
 
-    # 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: обработка "Назад" на экране выбора метода
     if text == BTN_BACK_FULL:
         logger.info(f"🔧 Админ {update.effective_user.id} нажал 'Назад' на выборе метода")
         return await exit_to_admin_menu(
@@ -148,7 +149,7 @@ async def choose_issue_method(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return WAITING_ISSUE_ID
 
-    if text == BTN_BY_PHONE_FULL:
+    elif text == BTN_BY_PHONE_FULL:
         await safe_reply(
             update,
             context,
@@ -158,7 +159,7 @@ async def choose_issue_method(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return WAITING_PHONE
 
-    if text == BTN_BY_BATCH_FULL:
+    elif text == BTN_BY_BATCH_FULL:
         try:
             result = await db.execute_read("""
                 SELECT DISTINCT date, breed 
@@ -206,10 +207,11 @@ async def handle_issue_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return WAITING_ISSUE_ID
 
     order_id = int(text)
-    order = await db.fetch_one(
+    rows = await db.execute_read(
         "SELECT * FROM orders WHERE id = ? AND status = 'active'",
         (order_id,)
     )
+    order = rows[0] if rows else None
 
     if not order:
         await safe_reply(update, context, "❌ Заказ не найден или уже выдан.")
@@ -320,9 +322,9 @@ async def handle_order_id_selection(update: Update, context: ContextTypes.DEFAUL
         context.user_data.get("issue_phone_orders", []) +
         context.user_data.get("issue_batch_orders", [])
     )
+    order = next((o for o in all_orders if o["id"] == order_id and o["status"] == "active"), None)
 
-    order = next((o for o in all_orders if o["id"] == order_id), None)
-    if not order or order["status"] != "active":
+    if not order:
         await safe_reply(update, context, "❌ Заказ не найден или уже выдан.", reply_markup=get_back_only_keyboard())
         return CHOOSE_ORDER_ID
 
@@ -332,16 +334,25 @@ async def handle_order_id_selection(update: Update, context: ContextTypes.DEFAUL
 
 
 async def _send_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE, order):
-    total_price = order["quantity"] * order["price"]
+    try:
+        qty = int(order["quantity"])
+        price = float(order["price"])
+        total_price = qty * price
+    except (TypeError, ValueError):
+        total_price = "—"
+
+    incubator = escape(order["incubator"]) if order["incubator"] else "—"
+
     msg = (
         f"⚠️ Подтвердите выдачу заказа №<b>{order['id']}</b>\n\n"
         f"🐔 <b>{escape(order['breed'])}</b>\n"
-        f"📦 <b>{order['quantity']}</b> шт.\n"
-        f"💰 <b>{order['price']}</b> руб./шт. → Итого: <b>{total_price}</b> руб.\n"
+        f"📦 <b>{qty}</b> шт.\n"
+        f"💰 <b>{int(price)}</b> руб./шт. → Итого: <b>{total_price}</b> руб.\n"
         f"📞 <b>{format_phone(order['phone'])}</b>\n"
         f"📅 Поставка: {format_date_display(order['date'])}\n"
-        f"🏢 Инкубатор: {order['incubator'] or '—'}"
+        f"🏢 Инкубатор: {incubator}"
     )
+
     await safe_reply(update, context, msg, reply_markup=get_confirmation_keyboard(), parse_mode="HTML")
 
 
@@ -368,32 +379,43 @@ async def confirm_issue_final(update: Update, context: ContextTypes.DEFAULT_TYPE
         return END
 
     try:
-        # === 1. Обновляем статус в БД ===
-        await db.execute_write("UPDATE orders SET status = 'issued' WHERE id = ?", (order["id"],))
+        # === 1. Проверка актуальности статуса ===
+        current = await db.execute_read("SELECT status FROM orders WHERE id = ?", (order["id"],))
+        if not current or current[0]["status"] != "active":
+            await exit_to_admin_menu(
+                update,
+                context,
+                "❌ Заказ уже выдан или изменён.",
+                keys_to_clear=ISSUE_KEYS_TO_CLEAR
+            )
+            return END
 
-        # === 2. Отправляем в 1С как Реализацию товаров ===
+        # === 2. Обновляем статус в БД ===
+        await db.execute_write("UPDATE orders SET status = 'issued', issued_at = datetime('now') WHERE id = ?", (order["id"],))
+
+        # === 3. Отправляем в 1С как Реализацию товаров ===
         success, msg = await send_to_1c(
             order_id=order["id"],
             phone=order["phone"],
             breed=order["breed"],
             quantity=order["quantity"],
-            price=order["price"],  # ← теперь передаём цену
+            price=order["price"],
             action="issue"
         )
 
         if not success:
             logger.error(f"❌ Ошибка отправки в 1С: {msg}")
-            # Можно добавить повтор или уведомление
+            # Можно добавить уведомление админу
         else:
             logger.info(f"✅ Документ реализации для заказа #{order['id']} создан в 1С")
 
-        # === 3. Уведомляем клиента ===
+        # === 4. Уведомляем клиента ===
         try:
             await notify_client_issue(order)
         except Exception as e:
             logger.error(f"❌ Ошибка уведомления клиента: {e}")
 
-        # === 4. Ответ админу ===
+        # === 5. Ответ админу ===
         await exit_to_admin_menu(
             update,
             context,
@@ -459,7 +481,7 @@ def register_admin_issue_handler(application):
             MessageHandler(
                 filters.ChatType.PRIVATE & filters.Text([ADMIN_ISSUE_BUTTON_TEXT]),
                 start_issue_flow
-            )
+            ),
         ],
         states={
             CHOOSE_ISSUE_METHOD: [
@@ -467,9 +489,7 @@ def register_admin_issue_handler(application):
                     filters.Text([BTN_BY_ID_FULL, BTN_BY_PHONE_FULL, BTN_BY_BATCH_FULL]),
                     choose_issue_method
                 ),
-                # 🔥 Обработка "Назад" на этом же экране
                 MessageHandler(filters.Text([BTN_BACK_FULL]), exit_on_confirm_back),
-                # Мусор
                 MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_unknown_input),
             ],
             WAITING_ISSUE_ID: [

@@ -5,19 +5,19 @@
 ✅ Очистка бэкапов старше 7 дней
 ✅ Защита от больших файлов (>50 МБ)
 ✅ Логирование и уведомления об ошибках
+✅ Безопасная регистрация задачи (без дублей)
+✅ Корректная работа с job_queue и bot_data
 """
 
 import os
-import shutil
+import logging
 from datetime import datetime, time
 from telegram.ext import Application, ContextTypes
-from telegram import Document
-import logging
 import sqlite3
+import hashlib
 
-# ✅ Импорт из одного источника
+# Импортируем только DB_PATH — он независим
 from database.repository import DB_PATH
-from main import BOT_VERSION  # Для имени файла
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,19 @@ os.makedirs(BACKUP_DIR, exist_ok=True)
 # Настройки
 BACKUP_RETENTION_DAYS = 7
 MAX_FILE_SIZE_MB = 50
+
+
+def get_file_hash(filepath: str) -> str:
+    """Возвращает короткий MD5 хэш файла (8 символов)"""
+    h = hashlib.md5()
+    try:
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                h.update(chunk)
+        return h.hexdigest()[:8]
+    except Exception as e:
+        logger.error(f"❌ Не удалось посчитать хэш файла {filepath}: {e}")
+        return "error"
 
 
 def create_backup() -> str:
@@ -41,9 +54,7 @@ def create_backup() -> str:
     backup_path = os.path.join(BACKUP_DIR, f"backup_{timestamp}.db")
 
     try:
-        # Подключаемся к основной БД
         conn = sqlite3.connect(DB_PATH)
-        # Создаём или подключаемся к файлу бэкапа
         with sqlite3.connect(backup_path) as bck:
             conn.backup(bck)
         conn.close()
@@ -57,8 +68,8 @@ def create_backup() -> str:
             try:
                 os.remove(backup_path)
                 logger.info(f"🧹 Временный файл удалён: {backup_path}")
-            except Exception:
-                pass
+            except Exception as rm_error:
+                logger.error(f"❌ Не удалось удалить временный бэкап: {rm_error}")
         raise
 
 
@@ -93,10 +104,20 @@ async def send_backup(context: ContextTypes.DEFAULT_TYPE):
     Полный цикл: создание → отправка → очистка
     Запускается каждый день через JobQueue
     """
+    # Проверяем наличие необходимых данных
     devops_chat_id = context.application.bot_data.get("DEVOPS_CHAT_ID")
+    bot_version = context.application.bot_data.get("BOT_VERSION", "unknown")
+
     if not devops_chat_id:
-        logger.warning("⚠️ DEVOPS_CHAT_ID не найден — автобэкап отключён")
+        logger.warning("⚠️ DEVOPS_CHAT_ID не найден — пропуск автобэкапа")
         return
+
+    # Защита от параллельного запуска
+    if context.application.bot_data.get("is_backup_running"):
+        logger.warning("⚠️ Автобэкап уже выполняется — пропуск")
+        return
+
+    context.application.bot_data["is_backup_running"] = True
 
     try:
         # 1. Создаём бэкап
@@ -115,9 +136,12 @@ async def send_backup(context: ContextTypes.DEFAULT_TYPE):
 
         # 3. Готовим имя файла с версией
         human_time = datetime.now().strftime("%d.%m %H.%M")
-        filename = f"backup_v{BOT_VERSION}_{human_time}.db"
+        filename = f"backup_v{bot_version}_{human_time}.db"
 
-        # 4. Отправляем в DevOps
+        # 4. Считаем хэш
+        file_hash = get_file_hash(backup_path)
+
+        # 5. Отправляем в DevOps
         with open(backup_path, "rb") as f:
             await context.bot.send_document(
                 chat_id=devops_chat_id,
@@ -126,8 +150,9 @@ async def send_backup(context: ContextTypes.DEFAULT_TYPE):
                 caption=(
                     f"✅ <b>Ежедневный резервный бэкап</b>\n"
                     f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-                    f"📦 Версия бота: <code>{BOT_VERSION}</code>\n"
-                    f"📊 Размер: {file_size_mb:.1f} MB"
+                    f"📦 Версия бота: <code>{bot_version}</code>\n"
+                    f"📊 Размер: {file_size_mb:.1f} MB\n"
+                    f"🔐 MD5: <code>{file_hash}</code>"
                 ),
                 parse_mode="HTML"
             )
@@ -146,20 +171,30 @@ async def send_backup(context: ContextTypes.DEFAULT_TYPE):
             logger.critical(f"❌ Не удалось отправить уведомление об ошибке: {send_error}")
 
     finally:
-        # 5. Очищаем старые бэкапы (даже если была ошибка)
+        # Снимаем флаг и чистим старые бэкапы
+        context.application.bot_data.pop("is_backup_running", None)
         cleanup_old_backups()
 
 
 def setup_backup_job(application: Application):
     """
     Регистрирует задачу ежедневного резервного копирования
-    Вызывается в post_init
+    Вызывается в post_init, когда bot_data уже инициализирован
     """
     job_queue = application.job_queue
     if not job_queue:
         logger.error("❌ JobQueue не доступен — автобэкап не установлен")
         return
 
-    # Запуск каждый день в 02:00
-    job_queue.run_daily(send_backup, time=time(hour=2, minute=0), name="daily_db_backup")
+    # Удаляем старую задачу, если есть
+    for job in job_queue.get_jobs_by_name("daily_db_backup"):
+        job.schedule_removal()
+        logger.debug("🧹 Удалена предыдущая задача 'daily_db_backup'")
+
+    # Добавляем новую
+    job_queue.run_daily(
+        send_backup,
+        time=time(hour=2, minute=0),
+        name="daily_db_backup"
+    )
     logger.info("✅ Планировщик автобэкапа установлен: 02:00")

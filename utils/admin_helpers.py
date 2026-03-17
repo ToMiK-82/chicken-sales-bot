@@ -18,9 +18,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# === Добавлено: явный END для завершения диалога ===
-END = ConversationHandler.END
-
 # --- Кэш для ID админов ---
 _admin_cache: Set[int] = set()
 _cache_initialized: bool = False
@@ -142,7 +139,7 @@ def admin_required(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Передаём log=False, чтобы не засорять лог при каждом вызове
         if not await check_admin(update, context, log=False):
-            return
+            return ConversationHandler.END  # ✅ Явный выход
         return await func(update, context)
     return wrapper
 
@@ -169,11 +166,8 @@ async def exit_to_admin_menu(
     parse_mode: Optional[str] = "HTML"
 ):
     """
-    Унифицированный выход в главное меню.
+    Унифицированный выход в главное меню администратора.
     Отправляет ЕДИНСТВЕННОЕ сообщение: действие + заголовок.
-
-    Порядок:
-        "Редактирование отменено.\n\n🔐 Админ-панель"
 
     Полностью очищает следы текущего диалога.
     """
@@ -185,9 +179,9 @@ async def exit_to_admin_menu(
         'add_breed', 'add_date', 'add_quantity', 'add_price', 'add_incubator',
         'issue_step', 'issue_query', 'selected_order',
         'current_state', 'in_conversation', 'waiting_for',
-        'edit_flow_history',           # ← история шагов
-        'current_conversation',        # ← КРИТИЧЕСКИ ВАЖНО!
-        'HANDLED',                     # ← предотвращает блокировку
+        'edit_flow_history',
+        'current_conversation',
+        'HANDLED',
     }
     keys_to_remove = (set(keys_to_clear or []) | default_keys) - {"back"}
 
@@ -206,15 +200,13 @@ async def exit_to_admin_menu(
         disable_notification=disable_notification,
     )
 
-    return END  # ✅ Теперь работает корректно
+    return ConversationHandler.END  # ✅ Теперь корректно
 
 
-# ✅ Экспорт
 __all__ = [
     "is_admin",
     "check_admin",
     "admin_required",
     "refresh_admin_cache",
     "exit_to_admin_menu",
-    "END",  # ✅ Экспортируем, если нужно где-то ещё
 ]

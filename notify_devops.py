@@ -5,17 +5,19 @@
 import httpx
 import sys
 
+
 def main():
-    if len(sys.argv) != 3:
-        print("❌ Usage: python notify_devops.py <token> <chat_id>")
+    if len(sys.argv) < 3:
+        print("❌ Usage: python notify_devops.py <token> <chat_id> [reason]")
         sys.exit(1)
 
     token = sys.argv[1].strip()
     chat_id = sys.argv[2].strip()
+    reason = sys.argv[3].strip() if len(sys.argv) > 3 else "обновление"
 
     text = (
         '⚠️ <b>Бот будет перезагружен</b>\n\n'
-        'Через 2 минуты начнётся обновление.\n'
+        f'Через 2 минуты начнётся <i>{reason}</i>.\n'
         'Пожалуйста, завершите все действия.'
     )
 
@@ -27,7 +29,8 @@ def main():
             data={
                 'chat_id': chat_id,
                 'text': text,
-                'parse_mode': 'HTML'
+                'parse_mode': 'HTML',
+                'disable_notification': False  # 🔔 Чтобы все услышали
             },
             timeout=10.0
         )
@@ -38,6 +41,7 @@ def main():
             print(f'Response: {resp.text}')
     except Exception as e:
         print(f'❌ Не удалось отправить уведомление: {e}')
+
 
 if __name__ == "__main__":
     main()

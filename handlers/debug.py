@@ -10,6 +10,8 @@
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 from utils.messaging import safe_reply
+from config.buttons import get_admin_main_keyboard
+from html import escape
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,7 +30,7 @@ async def debug_unknown_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     text = update.message.text.strip()
     user = update.effective_user
-    username = f"@{user.username}" if user.username else f"{user.first_name}"
+    username = f"@{user.username}" if user.username else user.first_name
 
     # Логируем сырой текст — без изменений
     logger.warning(
@@ -38,11 +40,11 @@ async def debug_unknown_message(update: Update, context: ContextTypes.DEFAULT_TY
     # ⚠️ Только в dev-режиме — можно включить ответ
     if DEBUG_MODE:
         try:
-            reply_markup = context.bot_data.get("main_keyboard")
+            reply_markup = get_admin_main_keyboard()  # ← теперь из config.buttons
             await safe_reply(
                 update,
                 context,
-                f"🔧 <b>Получено:</b> <code>{text}</code>\n\n"
+                f"🔧 <b>Получено:</b> <code>{escape(text)}</code>\n\n"
                 f"Бот обрабатывает команды. Нажмите кнопку ниже.",
                 reply_markup=reply_markup,
                 parse_mode="HTML"

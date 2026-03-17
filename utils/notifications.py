@@ -9,6 +9,7 @@
 from database.repository import db
 from html import escape
 from datetime import datetime
+from typing import Optional, Dict, Any
 import logging
 
 # ✅ Импортируем safe_reply из нового модуля
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 _user_cache = {}
 
 
-async def _get_user_id_by_phone(phone: str) -> int | None:
+async def _get_user_id_by_phone(phone: str) -> Optional[int]:
     """
     Получает user_id по телефону.
     Использует кэш для уменьшения запросов к БД.
@@ -64,7 +65,7 @@ def _format_price(value) -> int:
 
 # === Уведомления ===
 
-async def notify_client_issue(context, order_data: dict) -> bool:
+async def notify_client_issue(context, order_data: Dict[str, Any]) -> bool:
     """
     Уведомляет клиента о выдаче заказа.
     :param context: ContextTypes.DEFAULT_TYPE — для safe_reply
@@ -83,21 +84,27 @@ async def notify_client_issue(context, order_data: dict) -> bool:
     try:
         breed = order_data["breed"]
         order_id = order_data["id"]
-        quantity = order_data["quantity"]
+
+        # Парсим количество
+        try:
+            quantity = int(order_data["quantity"])
+        except (TypeError, ValueError, KeyError):
+            quantity = 0
+
         incubator = order_data.get("incubator", "—")
         stock_id = order_data.get("stock_id")
         price = _format_price(order_data.get("price"))
-        total = quantity * price if isinstance(quantity, int) and price > 0 else "—"
-        formatted_date = _format_date(order_data["date"])
+        total = quantity * price if quantity > 0 and price > 0 else "—"
+        formatted_date = _format_date(order_data.get("date"))
 
         stock_info = f" | 🏷️<code>{stock_id}</code>" if stock_id else ""
 
         message = (
             "✅ <b>Ваш заказ выдан!</b>\n\n"
             f"🔢 <b>Заказ №{order_id}</b>\n"
-            f"🐔 <b>{escape(breed)}</b>{stock_info}\n"
+            f"🐔 <b>{escape(breed, quote=False)}</b>{stock_info}\n"
             f"📅 <b>Поставка:</b> {formatted_date}\n"
-            f"🏢 <b>Инкубатор:</b> {escape(incubator)}\n"
+            f"🏢 <b>Инкубатор:</b> {escape(incubator, quote=False)}\n"
             f"📦 <b>{quantity} шт.</b> × <b>{price} руб.</b> = <b>{total} руб.</b>\n"
             f"📞 <b>Телефон:</b> {escape(phone)}\n"
             "────────────────\n"
@@ -109,6 +116,7 @@ async def notify_client_issue(context, order_data: dict) -> bool:
             context=context,
             text=message,
             chat_id=user_id,
+            parse_mode="HTML",
             disable_cooldown=True  # Приоритетное уведомление
         )
 
@@ -121,7 +129,7 @@ async def notify_client_issue(context, order_data: dict) -> bool:
         return False
 
 
-async def notify_client_order_updated(context, order: dict) -> bool:
+async def notify_client_order_updated(context, order: Dict[str, Any]) -> bool:
     """
     Уведомляет клиента об изменении заказа.
     :param context: ContextTypes.DEFAULT_TYPE
@@ -142,7 +150,7 @@ async def notify_client_order_updated(context, order: dict) -> bool:
         order_id = order["id"]
 
         if "breed" in order and order["breed"]:
-            changes.append(f"• Порода: <b>{escape(order['breed'])}</b>")
+            changes.append(f"• Порода: <b>{escape(order['breed'], quote=False)}</b>")
         if "quantity" in order:
             try:
                 qty = int(order["quantity"])
@@ -150,7 +158,7 @@ async def notify_client_order_updated(context, order: dict) -> bool:
             except (TypeError, ValueError):
                 pass
         if "incubator" in order and order["incubator"]:
-            changes.append(f"• Инкубатор: <b>{escape(order['incubator'])}</b>")
+            changes.append(f"• Инкубатор: <b>{escape(order['incubator'], quote=False)}</b>")
         if "date" in order:
             formatted = _format_date(order["date"])
             changes.append(f"• Поставка: <b>{formatted}</b>")
@@ -173,6 +181,7 @@ async def notify_client_order_updated(context, order: dict) -> bool:
             context=context,
             text=message,
             chat_id=user_id,
+            parse_mode="HTML",
             disable_cooldown=True
         )
 
@@ -185,7 +194,14 @@ async def notify_client_order_updated(context, order: dict) -> bool:
         return False
 
 
-async def notify_client_order_confirmed(context, user_id: int, order_id: int, breed: str, quantity: int, date: str) -> bool:
+async def notify_client_order_confirmed(
+    context,
+    user_id: int,
+    order_id: int,
+    breed: str,
+    quantity: int,
+    date: str
+) -> bool:
     """
     Уведомляет клиента о подтверждении заказа.
     :param context: ContextTypes.DEFAULT_TYPE
@@ -200,7 +216,7 @@ async def notify_client_order_confirmed(context, user_id: int, order_id: int, br
 
         message = (
             "✅ <b>Ваш заказ подтверждён!</b>\n\n"
-            f"📌 Порода: <b>{escape(breed)}</b>\n"
+            f"📌 Порода: <b>{escape(breed, quote=False)}</b>\n"
             f"📦 Количество: <b>{quantity} шт.</b>\n"
             f"📅 Поставка: <b>{formatted_date}</b>\n\n"
             "Ожидайте дальнейших инструкций.\n"
@@ -212,6 +228,7 @@ async def notify_client_order_confirmed(context, user_id: int, order_id: int, br
             context=context,
             text=message,
             chat_id=user_id,
+            parse_mode="HTML",
             disable_cooldown=True
         )
 

@@ -6,7 +6,7 @@
 ✅ После списка: 'Отменить' и 'Назад'  
 ✅ Отмена по ID: безопасно, с подтверждением  
 ✅ Все данные очищаются при выходе  
-✅ Fallback безопасен  
+✅ Fallback безопасен (только для админов)  
 ✅ Валидация: start_date < end_date, корректный формат ДД.ММ.ГГГГ  
 ✅ Поддержка: фото, пропуск, даты  
 ✅ Группа: group=2  
@@ -14,7 +14,7 @@
 """
 
 import logging
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
@@ -70,6 +70,7 @@ PROMO_KEYS = [
 
 # === Запуск ===
 async def start_promotions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запуск диалога управления акциями."""
     if not await check_admin(update, context):
         return await exit_to_admin_menu(update, context, "❌ У вас нет доступа.")
 
@@ -91,8 +92,9 @@ async def start_promotions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Выбор действия ===
 async def handle_promo_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка основных действий: Создать, Список, Назад."""
     if not update.effective_message or not update.effective_message.text:
-        return await exit_to_admin_menu(update, context, "❌ Ожидался текст.", keys_to_clear=PROMO_KEYS)
+        return await fallback_to_admin_menu(update, context)
 
     text = update.effective_message.text.strip()
 
@@ -196,7 +198,7 @@ async def handle_promo_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data['HANDLED'] = True
         return PROMO_CANCEL_SELECT
 
-    # ✅ ОСНОВНАЯ ПОПРАВКА: Обработка кнопки "Создать"
+    # ✅ Создать акцию
     if text == BTN_CREATE_PROMO_FULL:
         await safe_reply(
             update,
@@ -223,7 +225,7 @@ async def handle_promo_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 # === Добавление: заголовок ===
 async def promo_add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_message:
-        return await exit_to_admin_menu(update, context, "❌ Ожидался текст.", keys_to_clear=PROMO_KEYS)
+        return await fallback_to_admin_menu(update, context)
 
     text = update.effective_message.text.strip()
 
@@ -249,7 +251,7 @@ async def promo_add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === Добавление: описание ===
 async def promo_add_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_message:
-        return await exit_to_admin_menu(update, context, "❌ Ожидался текст.", keys_to_clear=PROMO_KEYS)
+        return await fallback_to_admin_menu(update, context)
 
     text = update.effective_message.text.strip()
 
@@ -580,8 +582,16 @@ async def handle_promo_cancel_confirm(update: Update, context: ContextTypes.DEFA
     return PROMO_SELECT_ACTION
 
 
-# === Fallback — безопасный выход ===
+# === Fallback — безопасный выход (ТОЛЬКО ДЛЯ АДМИНОВ) ===
 async def fallback_to_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Безопасный fallback.
+    Если пользователь — не админ, молча завершает диалог.
+    """
+    if not await check_admin(update, context):
+        return ConversationHandler.END
+
+    # Очистка специфичных ключей
     for key in ['stock_edit_mode', 'stock_list', 'current_conversation']:
         context.user_data.pop(key, None)
 

@@ -563,7 +563,6 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # === Финальное подтверждение ===
-# === Финальное подтверждение ===
 async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
     logger.info(f"✅ [confirm_edit_final] Подтверждение: '{text}'")
@@ -602,6 +601,12 @@ async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not all([field, new_value, order_id]):
         return await exit_to_admin_menu(update, context, "❌ Ошибка данных.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
 
+    # 🔒 Защита от SQL-инъекций
+    allowed_fields = {"breed", "quantity", "incubator", "date"}
+    if field not in allowed_fields:
+        logger.error(f"❌ Попытка обновления недопустимого поля: {field}")
+        return await exit_to_admin_menu(update, context, "❌ Недопустимое поле.", keys_to_clear=ORDER_KEYS_TO_CLEAR)
+
     try:
         # Получаем старый заказ
         old_order = await db.execute_read("SELECT * FROM orders WHERE id = ?", (order_id,))
@@ -610,8 +615,15 @@ async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE)
         old_order = dict(old_order[0])
         old_qty = int(old_order["quantity"])
 
-        # Обновляем поле
-        await db.execute_write(f"UPDATE orders SET {field} = ? WHERE id = ?", (new_value, order_id))
+        # Обновляем поле через безопасный запрос
+        field_queries = {
+            "breed": "UPDATE orders SET breed = ? WHERE id = ?",
+            "quantity": "UPDATE orders SET quantity = ? WHERE id = ?",
+            "incubator": "UPDATE orders SET incubator = ? WHERE id = ?",
+            "date": "UPDATE orders SET date = ? WHERE id = ?",
+        }
+        query = field_queries[field]
+        await db.execute_write(query, (new_value, order_id))
 
         # Если меняем количество — корректируем остатки
         if field == "quantity":

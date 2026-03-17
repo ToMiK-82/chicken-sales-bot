@@ -1,11 +1,11 @@
 """
 🛡️ Обработчики отмены и возврата для админских диалогов.
-✅ Не зависят от других модулей
-✅ Используют только safe_reply и клавиатуры
-✅ Проверяют права админа
-✅ Возвращаются в главное **клиентское** меню при выходе
-✅ Обрабатывают как кнопки, так и команды
-✅ Поддерживают выход через /cancel, /start и кнопки меню
+✅ Работают ТОЛЬКО для админов (вход защищён на уровне entry_points)
+✅ Не проверяют права — только возвращают в меню
+✅ Используют safe_reply и клавиатуры
+✅ Возвращаются в главное меню (админское)
+✅ Обрабатывают команды /cancel, /start, /admin
+✅ Поддерживают кнопки меню
 """
 
 from telegram import Update
@@ -15,7 +15,6 @@ from config.buttons import (
     get_admin_main_keyboard,
     get_action_keyboard,
     get_confirmation_keyboard,
-    get_main_keyboard,
     # Кнопки меню
     SCHEDULE_BUTTON_TEXT,
     CATALOG_BUTTON_TEXT,
@@ -24,7 +23,6 @@ from config.buttons import (
     CONTACTS_BUTTON_TEXT,
     HELP_BUTTON_TEXT,
 )
-from utils.admin_helpers import check_admin
 from utils.helpers import back_to_main_menu
 from html import escape
 import logging
@@ -50,21 +48,10 @@ __all__ = [
 
 async def fallback_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Ловит любые неожидаемые сообщения.
+    Ловит любые неожидаемые сообщения ОТ АДМИНА.
     Если это кнопка меню — выходит в главное меню.
-    Если команда — обрабатывает.
     Иначе — показывает подсказку.
     """
-    if not await check_admin(update, context):
-        logger.warning(f"🚫 fallback_unknown: не-админ ID={update.effective_user.id} ввёл: {repr(update.message.text)}")
-        await safe_reply(
-            update,
-            context,
-            "📌 Пожалуйста, используйте кнопки меню.",
-            reply_markup=get_main_keyboard(),
-        )
-        return ConversationHandler.END
-
     text = update.message.text.strip() if update.message and update.message.text else ""
     if not text:
         return ConversationHandler.END
@@ -89,40 +76,20 @@ async def fallback_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(
         update,
         context,
-        "📌 Пожалуйста, используйте кнопки ниже или команды.",
+        "📌 Пожалуйста, используйте кнопки ниже.",
         reply_markup=get_admin_main_keyboard(),
     )
     return ConversationHandler.END
 
 
 async def fallback_back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Возврат в главное клиентское меню (унифицированный выход)."""
-    if not await check_admin(update, context):
-        logger.warning("🚫 fallback_back_to_main: не-админ пытается вернуться в меню")
-        await safe_reply(
-            update,
-            context,
-            "🏠 Вы в главном меню.",
-            reply_markup=get_main_keyboard(),
-        )
-        return ConversationHandler.END
-
+    """Возврат в главное меню (админское)."""
     logger.info("🔙 Админ вызвал возврат в главное меню")
     return await back_to_main_menu(update, context)
 
 
 async def fallback_back_to_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Возврат к выбору действия с партией."""
-    if not await check_admin(update, context):
-        logger.warning("🚫 fallback_back_to_actions: не-админ пытается выбрать действие")
-        await safe_reply(
-            update,
-            context,
-            "🏠 Вы в главном меню.",
-            reply_markup=get_main_keyboard(),
-        )
-        return ConversationHandler.END
-
     logger.info("🔙 Админ возвратился к выбору действия с партией")
     await safe_reply(
         update,
@@ -135,16 +102,6 @@ async def fallback_back_to_actions(update: Update, context: ContextTypes.DEFAULT
 
 async def fallback_edit_back_to_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Возврат к выбору партии для редактирования."""
-    if not await check_admin(update, context):
-        logger.warning("🚫 fallback_edit_back_to_select: не-админ пытается редактировать партию")
-        await safe_reply(
-            update,
-            context,
-            "🏠 Вы в главном меню.",
-            reply_markup=get_main_keyboard(),
-        )
-        return ConversationHandler.END
-
     logger.info("🔙 Админ возвратился к выбору партии для редактирования")
     await safe_reply(
         update,
@@ -157,16 +114,6 @@ async def fallback_edit_back_to_select(update: Update, context: ContextTypes.DEF
 
 async def fallback_edit_back_to_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Возврат к вводу количества при редактировании партии."""
-    if not await check_admin(update, context):
-        logger.warning("🚫 fallback_edit_back_to_quantity: не-админ пытается ввести количество")
-        await safe_reply(
-            update,
-            context,
-            "🏠 Вы в главном меню.",
-            reply_markup=get_main_keyboard(),
-        )
-        return ConversationHandler.END
-
     breed = context.user_data.get('edit_breed', 'цыплят')
     if not isinstance(breed, str):
         breed = 'цыплят'
@@ -184,16 +131,6 @@ async def fallback_edit_back_to_quantity(update: Update, context: ContextTypes.D
 
 async def fallback_cancel_back_to_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Возврат к выбору партии для отмены."""
-    if not await check_admin(update, context):
-        logger.warning("🚫 fallback_cancel_back_to_select: не-админ пытается отменить партию")
-        await safe_reply(
-            update,
-            context,
-            "🏠 Вы в главном меню.",
-            reply_markup=get_main_keyboard(),
-        )
-        return ConversationHandler.END
-
     logger.info("🔙 Админ возвратился к выбору партии для отмены")
     await safe_reply(
         update,

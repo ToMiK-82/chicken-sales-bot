@@ -25,12 +25,22 @@ HELP_TEXT = "📤 Создать резервную копию базы данн
 BACKUP_DIR = "backups"
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
+# ⚙️ Константы
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 МБ — лимит Telegram
+
 
 @admin_required
 async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет безопасную копию БД админу через .backup()"""
-    effective_message = update.effective_message
     user_id = update.effective_user.id
+
+    # 🔒 Простой рейт-лимит (по желанию)
+    now = datetime.now().timestamp()
+    last_backup = context.user_data.get("last_backup_time", 0)
+    if now - last_backup < 60:  # 1 минута
+        await safe_reply(update, context, "⏳ Подождите минуту перед повторным бэкапом.")
+        return
+    context.user_data["last_backup_time"] = now
 
     if not os.path.exists(DB_PATH):
         folder_listing = "; ".join(os.listdir(".")[:10])
@@ -50,12 +60,12 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.warning(f"❌ БД не найдена: {os.path.abspath(DB_PATH)}")
         return
 
-    # 🔧 Временный файл теперь в папке backups/
+    # 🔧 Временный файл в папке backups/
     temp_backup = os.path.join(
         BACKUP_DIR,
         f"temp_backup_{user_id}_{int(datetime.now().timestamp())}.db"
     )
-    
+
     try:
         # Используем .backup() для горячей копии
         conn = sqlite3.connect(DB_PATH)
@@ -64,7 +74,7 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         conn.close()
 
         file_size = os.path.getsize(temp_backup)
-        if file_size > 50 * 1024 * 1024:  # 50 МБ
+        if file_size > MAX_FILE_SIZE:
             human_size = f"{file_size / (1024*1024):.1f} МБ"
             await safe_reply(
                 update,
@@ -75,11 +85,11 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         # Уникальное имя файла при отправке
-        timestamp = update.message.date.strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"backup_admin_{user_id}_{timestamp}.db"
 
         with open(temp_backup, "rb") as f:
-            await effective_message.reply_document(
+            await update.effective_message.reply_document(
                 document=f,
                 filename=filename,
                 caption="📦 <b>Резервная копия базы данных</b>\n✅ Создана по запросу администратора",

@@ -195,7 +195,7 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(
         update,
         context,
-        "🔢 Введите количество цыплят:",
+        "🔢 Введите количество цыплят (целое число):",
         reply_markup=get_back_only_keyboard(),
     )
     context.user_data['HANDLED'] = True
@@ -225,7 +225,7 @@ async def handle_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(
             update,
             context,
-            "❌ Введите корректное количество.",
+            "❌ Введите корректное количество (целое положительное число).",
             reply_markup=get_back_only_keyboard(),
         )
         context.user_data['HANDLED'] = True
@@ -237,7 +237,7 @@ async def handle_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(
         update,
         context,
-        "💰 Введите цену за одного цыплёнка (в рублях):",
+        "💰 Введите цену за одного цыплёнка (можно с копейками через точку или запятую):",
         reply_markup=get_back_only_keyboard(),
     )
     context.user_data['HANDLED'] = True
@@ -270,7 +270,7 @@ async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(
             update,
             context,
-            "❌ Введите корректную цену.",
+            "❌ Введите корректную цену (положительное число).",
             reply_markup=get_back_only_keyboard(),
         )
         context.user_data['HANDLED'] = True
@@ -414,6 +414,10 @@ async def confirm_add_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === Регистрация обработчика ===
 def register_add_stock_handler(application):
     """Регистрирует обработчик добавления партии с высоким приоритетом."""
+    # Проверка согласованности списков
+    assert len(BREED_BUTTONS) == len(BREEDS), "BREED_BUTTONS и BREEDS должны быть одной длины"
+    assert len(INCUBATOR_BUTTONS) == len(INCUBATORS), "INCUBATOR_BUTTONS и INCUBATORS должны быть одной длины"
+
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(

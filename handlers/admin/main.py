@@ -140,7 +140,13 @@ async def start_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         welcome_text = "🔐 <b>Админ-панель</b>\n\nВведите пароль для входа."
 
-    await safe_reply(update, context, welcome_text, parse_mode="HTML")
+    # 🔽 ВАЖНО: УБИРАЕМ КЛАВИАТУРУ, ЧТОБЫ НЕЛЬЗЯ БЫЛО НАЖАТЬ КНОПКИ
+    await safe_reply(
+        update, context,
+        welcome_text,
+        parse_mode="HTML",
+        reply_markup=None  # ← скрываем клавиатуру
+    )
 
 
 @admin_required
@@ -149,6 +155,7 @@ async def handle_admin_password(update: Update, context: ContextTypes.DEFAULT_TY
     Обрабатывает ввод пароля.
     ❌ Если не ждём пароль — передаёт дальше.
     ✅ Удаляет сообщение с паролем — безопасность.
+    ✅ При ошибке — возврат в клиентское меню.
     """
     if not update or not update.effective_user:
         logger.warning("⚠️ Пропуск: update или effective_user отсутствует")
@@ -172,15 +179,17 @@ async def handle_admin_password(update: Update, context: ContextTypes.DEFAULT_TY
     debug_mode = context.application.bot_data.get("DEBUG", False)
 
     try:
-        # 🔐 Удаляем сообщение с паролем — чтобы не висело в истории
+        # 🔐 Удаляем сообщение с паролем
         await message.delete()
         logger.debug(f"🗑️ Сообщение с паролем удалено: {user_id}")
     except Exception as e:
         logger.warning(f"🔧 Не удалось удалить сообщение с паролем: {e}")
 
     if text == ADMIN_PASSWORD:
+        # ✅ Успешный вход
         context.user_data["is_admin_authenticated"] = True
         context.user_data["awaiting_admin_password"] = False
+        context.user_data.pop("admin_first_time", None)
 
         commands_text = (
             "📌 <b>Добро пожаловать!</b>\n\n"
@@ -217,10 +226,22 @@ async def handle_admin_password(update: Update, context: ContextTypes.DEFAULT_TY
         logger.info(f"🔓 Успешный вход в админку: {user_id}")
 
     else:
-        await safe_reply(update, context, "❌ Неверный пароль. Попробуйте ещё раз.")
+        # ❌ Ошибка — очищаем состояние и возвращаем в клиентку
+        context.user_data.pop("awaiting_admin_password", None)
+        context.user_data.pop("admin_first_time", None)
+
         logger.warning(f"🔐 Ошибка входа: {user_id}")
 
+        # 🏠 Возвращаем в главное меню
+        await safe_reply(
+            update, context,
+            "❌ Неверный пароль. Доступ отклонён.\n\n"
+            "🏠 Вы возвращены в главное меню.",
+            reply_markup=get_main_keyboard()  # ← клиентская клавиатура
+        )
 
+
+# === ОСТАЛЬНЫЕ КОМАНДЫ — БЕЗ ИЗМЕНЕНИЙ ===
 @admin_required
 async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Добавляет админа: /addadmin 123456789"""

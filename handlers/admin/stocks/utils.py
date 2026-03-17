@@ -38,7 +38,7 @@ async def _select_stock(
             update,
             context,
             "📭 Нет доступных партий.",
-            reply_markup=None,  # будет установлена в хэндлере
+            reply_markup=None,
             parse_mode="HTML"
         )
         return ConversationHandler.END
@@ -73,6 +73,7 @@ def _format_stocks_list(stocks: List[Tuple]) -> str:
     """
     Форматирует список партий для отображения в <pre> теге.
     Ожидает кортежи: (id, breed, incubator, date, qty, avail, price)
+    ⚠️ Не экранирует! Экранирование делается снаружи через escape()
     """
     lines = []
     for i, row in enumerate(stocks, start=1):
@@ -89,27 +90,11 @@ def _format_stocks_list(stocks: List[Tuple]) -> str:
         except (TypeError, ValueError, OverflowError):
             display_price = 0
 
-        # Экранируем текст
-        breed_safe = escape(breed) if breed else "Не указана"
-        incubator_safe = escape(incubator) if incubator else "Не указан"
+        # Оставляем как есть — экранирование будет снаружи
+        breed_display = breed or "Не указана"
+        incubator_display = incubator or "Не указан"
 
-        lines.append(f"{i}. {breed_safe} | {delivery_date} | {qty} шт. | {display_price} руб.")
+        lines.append(f"{i}. {breed_display} | {delivery_date} | {qty} шт. | {display_price} руб.")
 
     return "\n".join(lines)
 
-
-# === УДАЛЕНО: _back_to_main ===
-# Функция _back_to_main удалена, так как:
-# - Дублирует exit_to_admin_menu
-# - Не ставит HANDLED_KEY
-# - Устарела
-#
-# ✅ Вместо неё используйте:
-# from utils.admin_helpers import exit_to_admin_menu
-#
-# await exit_to_admin_menu(
-#     update,
-#     context,
-#     message="🚪 Вы в главном меню",
-#     keys_to_clear=["edit_action", "stock_list", "breed"]
-# )

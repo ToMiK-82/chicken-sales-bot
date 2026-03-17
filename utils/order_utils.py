@@ -14,12 +14,13 @@ from utils.messaging import safe_reply
 from utils.notifications import _get_user_id_by_phone
 from html import escape
 from datetime import datetime
+from typing import Dict, Any, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-async def cancel_order_by_id(order_id: int, context=None, user_id=None, admin_initiated=False):
+async def cancel_order_by_id(order_id: int, context=None, user_id=None, admin_initiated=False) -> bool:
     """
     Отменяет заказ по ID.
     Для заказов со статусом 'active' или 'pending' возвращает количество в партию, если она указана.
@@ -73,7 +74,7 @@ async def cancel_order_by_id(order_id: int, context=None, user_id=None, admin_in
                     "breed": row["breed"],
                     "quantity": row["quantity"],
                     "date": row["date"],
-                    "incubator": row["incubator"],  # ✅ исправлено: убрали .get()
+                    "incubator": row["incubator"],
                     "stock_id": row["stock_id"],
                     "phone": row["phone"],
                     "price": row["price"],
@@ -86,7 +87,7 @@ async def cancel_order_by_id(order_id: int, context=None, user_id=None, admin_in
                     admin_initiated=admin_initiated
                 )
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки уведомления клиенту для заказа {order_id}: {e}")
+            logger.error(f"❌ Ошибка отправки уведомления клиенту для заказа {order_id}: {e}", exc_info=True)
 
         return True
 
@@ -103,7 +104,7 @@ async def cancel_order_by_id(order_id: int, context=None, user_id=None, admin_in
         return False
 
 
-async def check_stock_availability(breed: str, incubator: str, delivery_date: str, requested_qty: int) -> tuple[bool, int]:
+async def check_stock_availability(breed: str, incubator: str, delivery_date: str, requested_qty: int) -> Tuple[bool, int]:
     """
     Проверяет, достаточно ли остатков для заказа.
     Учитывает: порода, инкубатор, дата поставки.
@@ -124,11 +125,11 @@ async def check_stock_availability(breed: str, incubator: str, delivery_date: st
         current_stock = row[0]["available_quantity"] if row else 0
         return current_stock >= requested_qty, current_stock
     except Exception as e:
-        logger.error(f"❌ Ошибка проверки остатков для {breed} в {incubator} на {delivery_date}: {e}")
+        logger.error(f"❌ Ошибка проверки остатков для {breed} в {incubator} на {delivery_date}: {e}", exc_info=True)
         return False, 0
 
 
-async def _send_cancellation_notification(bot, user_id: int, order_data: dict, admin_initiated: bool = False):
+async def _send_cancellation_notification(bot, user_id: int, order_data: Dict[str, Any], admin_initiated: bool = False) -> bool:
     """
     Отправляет клиенту уведомление об отмене заказа.
     Принимает готовый user_id.
@@ -150,7 +151,7 @@ async def _send_cancellation_notification(bot, user_id: int, order_data: dict, a
         try:
             qty = int(order_data["quantity"])
             price_raw = order_data["price"]
-            price = int(float(price_raw)) if price_raw else 0
+            price = int(float(price_raw)) if price_raw not in (None, '') else 0
             total = qty * price
         except (TypeError, ValueError):
             qty = order_data["quantity"]
@@ -159,6 +160,7 @@ async def _send_cancellation_notification(bot, user_id: int, order_data: dict, a
 
         stock_info = f" | 🏷️<code>{order_data['stock_id']}</code>" if order_data.get("stock_id") else ""
         phone_safe = escape(str(order_data["phone"]))
+        incubator = escape(order_data.get("incubator") or "—")
 
         title = "ℹ️ Заказ отменён администратором" if admin_initiated else "✅ Заказ отменён"
         reason = "Администратор отменил ваш заказ." if admin_initiated else "Вы отменили заказ. Количество возвращено в продажу."
@@ -168,7 +170,7 @@ async def _send_cancellation_notification(bot, user_id: int, order_data: dict, a
             f"🔢 <b>Заказ №{order_data['id']}</b>\n"
             f"🐔 <b>{escape(order_data['breed'])}</b>{stock_info}\n"
             f"📅 <b>Поставка:</b> {formatted_date}\n"
-            f"🏢 <b>Инкубатор:</b> {order_data.get('incubator', '—')}\n"
+            f"🏢 <b>Инкубатор:</b> {incubator}\n"
             f"📦 <b>{qty} шт.</b> × <b>{price} руб.</b> = <b>{total} руб.</b>\n"
             f"📞 <b>Телефон:</b> {phone_safe}\n"
             "────────────────\n"

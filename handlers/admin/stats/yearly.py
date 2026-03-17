@@ -30,9 +30,13 @@ from .charts import send_charts, predict_next_month, _format_month
 from utils.messaging import safe_reply
 from html import escape
 import logging
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Константы
+MAX_YEAR_BUTTONS = 3
+DataList = List[Tuple[str, int]]
 
 async def handle_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -58,8 +62,7 @@ async def handle_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE
             return ConversationHandler.END
 
         # Формируем одну строку: максимум 3 года + "Назад"
-        max_years = 3
-        keyboard_row = [KeyboardButton(year) for year in years[:max_years]]
+        keyboard_row = [KeyboardButton(year) for year in years[:MAX_YEAR_BUTTONS]]
         keyboard_row.append(KeyboardButton(BTN_BACK_FULL))
 
         reply_markup = ReplyKeyboardMarkup([keyboard_row], resize_keyboard=True)
@@ -273,13 +276,15 @@ async def show_yearly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_admin_main_keyboard()
         )
 
-    context.user_data.pop('selected_year', None)
+    finally:
+        context.user_data.pop('selected_year', None)
+
     return ConversationHandler.END
 
 
 # === Запросы ===
 
-async def get_breed_sales(year: str):
+async def get_breed_sales(year: str) -> List[Tuple[str, str, int]]:
     """Продажи по породам: только issued"""
     return await db.execute_read("""
         SELECT strftime('%Y-%m', date), breed, SUM(quantity)
@@ -290,7 +295,7 @@ async def get_breed_sales(year: str):
     """, (year,))
 
 
-async def get_ordered_orders(year: str):
+async def get_ordered_orders(year: str) -> DataList:
     """Заказано: active + pending"""
     return await db.execute_read("""
         SELECT strftime('%Y-%m', date), COUNT(*)
@@ -301,7 +306,7 @@ async def get_ordered_orders(year: str):
     """, (year,))
 
 
-async def get_confirmed_orders(year: str):
+async def get_confirmed_orders(year: str) -> DataList:
     """Подтверждённые: active + issued"""
     return await db.execute_read("""
         SELECT strftime('%Y-%m', date), COUNT(*)
@@ -312,7 +317,7 @@ async def get_confirmed_orders(year: str):
     """, (year,))
 
 
-async def get_rejections(year: str):
+async def get_rejections(year: str) -> DataList:
     """Отмены"""
     return await db.execute_read("""
         SELECT strftime('%Y-%m', date), COUNT(*)
@@ -323,7 +328,7 @@ async def get_rejections(year: str):
     """, (year,))
 
 
-async def get_unique_clients(year: str):
+async def get_unique_clients(year: str) -> DataList:
     """Уникальные клиенты: кто делал подтверждённые заказы"""
     return await db.execute_read("""
         SELECT strftime('%Y-%m', date), COUNT(DISTINCT phone)
@@ -334,7 +339,7 @@ async def get_unique_clients(year: str):
     """, (year,))
 
 
-async def get_issued_quantity(year: str):
+async def get_issued_quantity(year: str) -> DataList:
     """Суммарное количество выданных цыплят по месяцам"""
     return await db.execute_read("""
         SELECT strftime('%Y-%m', date), SUM(quantity)

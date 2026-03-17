@@ -18,7 +18,6 @@
 
 import sys
 import os
-import asyncio
 import logging
 from datetime import datetime, time
 from dotenv import load_dotenv
@@ -31,7 +30,7 @@ from telegram.ext import (
 )
 
 # --- 🚀 Версия бота — ЕДИНСТВЕННОЕ место определения ---
-BOT_VERSION = "v4.9.5"  # 🔼 Увеличили версию
+BOT_VERSION = "v4.9.9"
 
 print("📍 Python executable:", sys.executable)
 try:
@@ -51,7 +50,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 DEVOPS_CHAT_ID = os.getenv("DEVOPS_CHAT_ID")
 DEBUG = os.getenv("DEBUG", "False").lower() in ("true", "1", "yes")
-DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES", "False").lower() in ("true", "1", "yes")  # False по умолчанию
+DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES", "False").lower() in ("true", "1", "yes")
 
 if not TOKEN:
     raise ValueError("❌ Не задан TELEGRAM_TOKEN в .env")
@@ -101,7 +100,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         f"<code>{type(context.error).__name__}: {context.error}</code>"
     )
 
-    # Уведомляем только DevOps
     if devops_id:
         try:
             await context.bot.send_message(
@@ -169,7 +167,7 @@ async def force_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def checkstocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     🔍 Ручная проверка всех партий: сверяет available_quantity с реальными заказами.
-    Доступно только админам.
+    Доступно только администраторам.
     """
     user_id = update.effective_user.id
     admin_ids = context.application.bot_data.get("ADMIN_IDS", [])
@@ -322,9 +320,10 @@ async def post_init(application: Application):
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки пород: {e}")
         available_breeds = []
-
+      
     # === 4. Инициализация флагов ===
     application.bot_data.setdefault("auto_start_done", {})
+    application.bot_data["ADMIN_PASSWORD"] = ADMIN_PASSWORD
     application.bot_data["DEVOPS_CHAT_ID"] = DEVOPS_CHAT_ID
     application.bot_data["BOT_VERSION"] = BOT_VERSION
 
@@ -358,15 +357,9 @@ async def post_init(application: Application):
     job_queue = application.job_queue
 
     def schedule_job(job_name: str, callback, job_time: time):
-        try:
-            existing_jobs = job_queue.jobs()
-            existing_names = [job.name for job in existing_jobs]
-            if job_name in existing_names:
-                logger.debug(f"⚠️ Задача '{job_name}' уже существует — пропущено")
-                return
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось проверить существующие задачи: {e}")
-
+        for job in job_queue.get_jobs_by_name(job_name):
+            job.schedule_removal()
+            logger.debug(f"🧹 Удалена старая задача: {job_name}")
         job_queue.run_daily(callback, time=job_time, name=job_name)
         logger.info(f"✅ Задача '{job_name}' запланирована")
 
@@ -420,10 +413,17 @@ async def post_init(application: Application):
         logger.error(f"❌ Ошибка при загрузке админов: {e}")
 
     # === 11. Несериализуемые данные ===
-    application.bot_data["ADMIN_PASSWORD"] = ADMIN_PASSWORD
     application.bot_data["available_breeds"] = available_breeds
     application.bot_data["start_time"] = datetime.now()
     application.bot_data["INITIALIZED"] = True
+
+    # === 12. Настройка автобэкапа (вызывается ТОЛЬКО после полной инициализации) ===
+    try:
+        from utils.backup_scheduler import setup_backup_job
+        setup_backup_job(application)
+        logger.info("✅ Планировщик автобэкапа установлен (02:00)")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при настройке автобэкапа: {e}", exc_info=True)
 
     logger.info("✅ Готов к работе. Никаких автоматических сообщений не отправлено.")
 
@@ -445,9 +445,9 @@ def register_handlers(application: Application):
 
     # === 1. АВТОЗАПУСК — ДО ВСЕХ ОСТАЛЬНЫХ ОБРАБОТЧИКОВ (group=-1) ===
     try:
-        from handlers.startup import register_auto_start_handler
+        from handlers.startup import register_startup_handler
         logger.debug("📌 Регистрация auto_start_handler (должна быть первой!)")
-        register_auto_start_handler(application)
+        register_startup_handler(application)
         if DEBUG:
             logger.info("✅ Автоматический /start активирован (group=-1)")
         else:
@@ -563,92 +563,38 @@ def register_handlers(application: Application):
         application.add_handler(CommandHandler("report", debug_report), group=3)
         logger.info("🔧 Команда /report доступна (DEBUG)")
 
+    # ✅ УДАЛЕНО: setup_backup_job здесь — теперь он в post_init
+    logger.debug("🔧 Планировщик автобэкапа будет настроен в post_init")
 
-# --- Запуск ---
-def main():
-    logger.info("🚀 Инициализация бота...")
+    logger.info("✅ Все обработчики успешно зарегистрированы.")
+
+
+# === ЗАПУСК БОТА ===
+if __name__ == "__main__":
     try:
-        application = (
+        logger.info("🚀 Запуск бота...")
+
+        app = (
             ApplicationBuilder()
             .token(TOKEN)
-            .
-connect_timeout(10.0)
-            .read_timeout(20.0)
-            .write_timeout(20.0)
-            .pool_timeout(5.0)
             .post_init(post_init)
             .post_shutdown(post_shutdown)
             .build()
         )
 
-        application.add_error_handler(error_handler)
-        register_handlers(application)
+        register_handlers(app)
 
-        logger.info(f"🟢 Бот запущен в {'DEBUG' if DEBUG else 'PRODUCTION'} режиме.")
+        logger.info("👂 Бот запущен и ожидает сообщения...")
+        if DROP_PENDING_UPDATES:
+            logger.warning("🧹 Удаление старых обновлений...")
 
-        try:
-            application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=DROP_PENDING_UPDATES,
-                poll_interval=0.5,
-            )
-        except KeyboardInterrupt:
-            logger.info("🛑 Бот остановлен пользователем (Ctrl+C)")
-        finally:
-            logger.info("✅ Работа завершена корректно")
+        app.run_polling(
+            drop_pending_updates=DROP_PENDING_UPDATES,
+            close_loop=True
+        )
 
+    except KeyboardInterrupt:
+        logger.info("🛑 Бот остановлен вручную.")
     except Exception as e:
-        logger.critical(f"❌ Критическая ошибка: {e}", exc_info=True)
-
-
-# === ТЕСТИРОВАНИЕ ===
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        print("🧪 Запуск тестов...\n")
-
-        try:
-            from config.buttons import (
-                CATALOG_BUTTON_TEXT, ORDERS_BUTTON_TEXT, SCHEDULE_BUTTON_TEXT,
-                BTN_BACK_FULL, BTN_ADMIN_EXIT_FULL, ADMIN_EXIT_BUTTON_TEXT, BREED_BUTTONS
-            )
-            print("✅ Импорт кнопок: OK")
-            print("   Пример: BREED_BUTTONS[0] =", BREED_BUTTONS[0])
-        except Exception as e:
-            print(f"❌ Ошибка импорта config/buttons.py: {e}")
-            sys.exit(1)
-
-        try:
-            from handlers.startup import register_auto_start_handler
-            print("✅ handlers/startup: OK")
-            print("   Функция register_auto_start_handler доступна")
-        except Exception as e:
-            print(f"❌ Ошибка импорта handlers/startup.py: {e}")
-            sys.exit(1)
-
-        try:
-            from handlers.start import register_start_handler
-            print("✅ handlers/start: OK")
-        except Exception as e:
-            print(f"❌ Ошибка импорта handlers/start.py: {e}")
-            sys.exit(1)
-
-        try:
-            from database.repository import init_db
-            print("✅ database/repository: OK")
-        except Exception as e:
-            print(f"❌ Ошибка импорта database/repository.py: {e}")
-            sys.exit(1)
-
-        print(f"🔑 TELEGRAM_TOKEN: {'✅ задан' if TOKEN else '❌ не задан'}")
-        print(f"📞 DEVOPS_CHAT_ID: {'✅ задан' if DEVOPS_CHAT_ID else '❌ не задан'}")
-
-        print("\n🎉 Все тесты пройдены! Готов к запуску.")
-        sys.exit(0)
-
-    # Обычный запуск
-    if os.name == 'nt':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    main()
-
-
-__all__ = ["BOT_VERSION", "main"]
+        logger.critical(f"💀 Критическая ошибка при запуске бота: {e}", exc_info=True)
+        sys.exit(1)
