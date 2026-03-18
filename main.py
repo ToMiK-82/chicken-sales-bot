@@ -1,5 +1,5 @@
 """
-🚀 Основной файл запуска бота — v4.9.5 (production-ready + test mode + startup fix)
+🚀 Основной файл запуска бота — v4.9.9 (production-ready + test mode + startup fix)
 ✅ Полная поддержка админ-панели
 ✅ Группы обработчиков:
    - group=-1 — автозапуск (первым!)
@@ -19,6 +19,7 @@
 import sys
 import os
 import logging
+import asyncio
 from datetime import datetime, time
 from dotenv import load_dotenv
 from telegram import Update
@@ -569,32 +570,50 @@ def register_handlers(application: Application):
     logger.info("✅ Все обработчики успешно зарегистрированы.")
 
 
-# === ЗАПУСК БОТА ===
+# === АСИНХРОННЫЙ ЗАПУСК ===
+async def main_async():
+    logger.info("🚀 Запуск бота...")
+
+    from telegram.request import HTTPXRequest
+    request = HTTPXRequest(
+        connect_timeout=20.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=10.0,
+        max_retries=3,
+    )
+
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .request(request)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
+
+    # Инициализируем до регистрации обработчиков
+    await app.initialize()
+    logger.info("✅ Бот инициализирован")
+
+    register_handlers(app)
+    logger.info("✅ Все обработчики зарегистрированы")
+
+    if DROP_PENDING_UPDATES:
+        logger.warning("🧹 Удаление старых обновлений...")
+
+    logger.info("👂 Бот запущен и ожидает сообщения...")
+    await app.run_polling(
+        drop_pending_updates=DROP_PENDING_UPDATES,
+        close_loop=True
+    )
+
+
 if __name__ == "__main__":
     try:
-        logger.info("🚀 Запуск бота...")
-
-        app = (
-            ApplicationBuilder()
-            .token(TOKEN)
-            .post_init(post_init)
-            .post_shutdown(post_shutdown)
-            .build()
-        )
-
-        register_handlers(app)
-
-        logger.info("👂 Бот запущен и ожидает сообщения...")
-        if DROP_PENDING_UPDATES:
-            logger.warning("🧹 Удаление старых обновлений...")
-
-        app.run_polling(
-            drop_pending_updates=DROP_PENDING_UPDATES,
-            close_loop=True
-        )
-
+        asyncio.run(main_async())
     except KeyboardInterrupt:
         logger.info("🛑 Бот остановлен вручную.")
     except Exception as e:
-        logger.critical(f"💀 Критическая ошибка при запуске бота: {e}", exc_info=True)
+        logger.critical(f"💀 Критическая ошибка: {e}", exc_info=True)
         sys.exit(1)
