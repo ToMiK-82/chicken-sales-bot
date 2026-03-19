@@ -11,10 +11,14 @@ logger = logging.getLogger(__name__)
 HTTP_URL = os.getenv("ERP_HTTP_URL")
 USERNAME = os.getenv("ERP_USERNAME")
 PASSWORD = os.getenv("ERP_PASSWORD")
+DEVOPS_CHAT_ID = int(os.getenv("DEVOPS_CHAT_ID", 0))  # Обязательно задай в .env
 
 if not all([HTTP_URL, USERNAME, PASSWORD]):
     logger.critical("❌ Не заданы ERP_... переменные в .env")
     raise ValueError("ERP_HTTP_URL, ERP_USERNAME, ERP_PASSWORD обязательны")
+
+if DEVOPS_CHAT_ID == 0:
+    logger.warning("⚠️ DEVOPS_CHAT_ID не задан — /getib доступен всем")
 
 
 async def send_order_to_1c(
@@ -35,12 +39,12 @@ async def send_order_to_1c(
         "price": price
     }
 
-    # ✅ Формируем URL: база + /order
-    url = f"{HTTP_URL.rstrip('/')}/order"
+    # ✅ Используем ERP_HTTP_URL как полный URL (уже содержит /Order)
+    url = HTTP_URL.rstrip("/")
 
     auth = aiohttp.BasicAuth(USERNAME, PASSWORD)
 
-    logger.debug(f"📤 Отправка заказа {order_id} в 1С: {url} | Данные: {data}")
+    logger.debug(f"📤 Отправка заказа {order_id} в 1С: {url}")
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -113,6 +117,7 @@ async def get_ib_parameters() -> tuple[bool, str]:
     """
     Возвращает текущие параметры подключения к 1С.
     Для диагностики командой /getib.
+    Доступно только DEVOPS_CHAT_ID.
     """
     try:
         start_time = asyncio.get_event_loop().time()
@@ -120,12 +125,10 @@ async def get_ib_parameters() -> tuple[bool, str]:
         end_time = asyncio.get_event_loop().time()
 
         params = {
-            "ERP_HTTP_URL": HTTP_URL,
-            "ERP_USERNAME": USERNAME,
             "Configured": "✅ Да" if all([HTTP_URL, USERNAME, PASSWORD]) else "❌ Нет",
             "Available": "🟢 Доступен" if is_available else "🔴 Недоступен",
             "Response Time": f"{end_time - start_time:.2f} sec",
-            "Full Order URL": f"{HTTP_URL.rstrip('/')}/order"  # ✅ Показываем полный путь
+            "Full Order URL": HTTP_URL.rstrip("/")  # ✅ Только реальный URL
         }
         result = "\n".join(f"{k}: {v}" for k, v in params.items())
         return True, result
