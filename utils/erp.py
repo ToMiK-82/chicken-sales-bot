@@ -21,7 +21,7 @@ async def send_order_to_1c(
     order_id: int,
     breed: str,
     quantity: int,
-    price: float
+    price: float = 85.0
 ) -> Tuple[bool, str]:
     """
     Отправляет заказ в 1С через HTTP-сервис.
@@ -35,8 +35,12 @@ async def send_order_to_1c(
         "price": price
     }
 
+    # ✅ Формируем URL: база + /order
+    url = f"{HTTP_URL.rstrip('/')}/order"
+
     auth = aiohttp.BasicAuth(USERNAME, PASSWORD)
-    url = HTTP_URL.rstrip("/") + "/order"  # Можно вынести в .env
+
+    logger.debug(f"📤 Отправка заказа {order_id} в 1С: {url} | Данные: {data}")
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -52,28 +56,35 @@ async def send_order_to_1c(
                         result = await resp.json()
                         if result.get("success"):
                             doc_number = result.get("doc_number", "неизвестно")
-                            logger.info(f"📤 Заказ {order_id} отправлен в 1С: документ №{doc_number}")
+                            logger.info(f"✅ Заказ {order_id} отправлен в 1С: документ №{doc_number}")
                             return True, f"Документ №{doc_number} создан"
                         else:
                             error_msg = result.get("error", "unknown error")
+                            logger.warning(f"❌ Ошибка 1С (в JSON): {error_msg}")
                             return False, f"Ошибка 1С: {error_msg}"
                     except Exception:
+                        # Сервер вернул текст (например, номер документа)
                         text = await resp.text()
-                        if text.strip():
-                            logger.info(f"📤 Заказ {order_id} отправлен в 1С: ответ={text.strip()}")
-                            return True, f"Документ №{text.strip()} создан"
+                        text_stripped = text.strip()
+                        if text_stripped:
+                            logger.info(f"✅ Заказ {order_id} отправлен в 1С: ответ={text_stripped}")
+                            return True, f"Документ №{text_stripped} создан"
                         else:
+                            logger.error("❌ Пустой ответ от 1С")
                             return False, "Пустой ответ от 1С"
                 else:
                     text = await resp.text()
+                    logger.error(f"❌ HTTP {resp.status} от 1С: {text[:200]}")
                     return False, f"HTTP {resp.status}: {text[:200]}"
 
     except asyncio.TimeoutError:
+        logger.error("❌ Таймаут подключения к 1С (30 сек)")
         return False, "⏰ Таймаут подключения к 1С (30 сек)"
     except aiohttp.ClientConnectionError:
+        logger.error("❌ Нет соединения с 1С (проверьте URL и доступность)")
         return False, "🔌 Нет соединения с 1С (проверьте URL и доступность)"
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки в 1С: {e}", exc_info=True)
+        logger.error(f"❌ Неожиданная ошибка отправки в 1С: {e}", exc_info=True)
         return False, f"Ошибка: {str(e)}"
 
 
@@ -82,17 +93,17 @@ async def send_to_1c(
     phone: str,
     breed: str,
     quantity: int,
-    price: float,
+    price: float = 85.0,
     action: str = "issue"
 ) -> Tuple[bool, str]:
     """
     Обёртка для отправки в 1С.
-    Сейчас используется только при выдаче (issue).
+    Сейчас используется только при выдаче (action='issue').
     """
     if action != "issue":
         logger.debug(f"ERP: action='{action}' skipped for order {order_id}")
-        return False, f"Action skipped: '{action}' not supported"
-    
+        return True, "Skipped"  # Логично: не ошибка, просто пропущено
+
     return await send_order_to_1c(order_id, breed, quantity, price)
 
 
@@ -113,7 +124,8 @@ async def get_ib_parameters() -> tuple[bool, str]:
             "ERP_USERNAME": USERNAME,
             "Configured": "✅ Да" if all([HTTP_URL, USERNAME, PASSWORD]) else "❌ Нет",
             "Available": "🟢 Доступен" if is_available else "🔴 Недоступен",
-            "Response Time": f"{end_time - start_time:.2f} sec"
+            "Response Time": f"{end_time - start_time:.2f} sec",
+            "Full Order URL": f"{HTTP_URL.rstrip('/')}/order"  # ✅ Показываем полный путь
         }
         result = "\n".join(f"{k}: {v}" for k, v in params.items())
         return True, result
@@ -131,6 +143,7 @@ async def _check_connection() -> bool:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(HTTP_URL, timeout=10) as resp:
+                # Даже если метод не разрешён (405) — сервер жив
                 return resp.status in (200, 405, 401, 403)
     except Exception as e:
         logger.debug(f"❌ Сервер 1С недоступен: {e}")
