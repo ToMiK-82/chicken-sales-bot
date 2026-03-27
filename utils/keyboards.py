@@ -47,44 +47,41 @@ async def get_available_breeds_from_db() -> List[str]:
 
 async def get_breeds_keyboard(bot_data: Optional[dict] = None) -> ReplyKeyboardMarkup:
     """
-    Генерирует клавиатуру с доступными породами.
+    Генерирует клавиатуру с породами, У КОТОРЫХ ЕСТЬ ДОСТУПНЫЕ ПАРТИИ.
     
-    Приоритет:
-    1. Актуальные породы из БД (с остатками и будущей датой)
-    2. Кэш из bot_data['available_breeds'] (на случай временной ошибки БД)
-    3. Статичный список BREEDS (финальный fallback)
-
-    Args:
-        bot_data: словарь из application.bot_data (может не содержать available_breeds)
-
-    Returns:
-        ReplyKeyboardMarkup с кнопками пород и "Назад"
+    ВАЖНО:
+    - Никакого fallback на кэш, если БД вернула [] (это не ошибка — это "нет в наличии")
+    - Кэш используется ТОЛЬКО при ошибке подключения к БД
+    - Статичный список BREEDS — только как крайний fallback
     """
-    breeds = []
 
-    # 1. Пытаемся получить актуальные данные из БД
+    breeds = []
+    use_fallback = False  # флаг: только если ошибка, а не пустой результат
+
+    # 1. Актуальные данные из БД
     try:
         breeds = await get_available_breeds_from_db()
+        # Если запрос прошёл, даже если пород нет → это нормально
+        # Не используем fallback
     except Exception as e:
-        logger.warning(f"⚠️ Не удалось загрузить породы из БД: {e}")
+        logger.warning(f"⚠️ Ошибка при загрузке пород из БД: {e}. Используем fallback.")
+        use_fallback = True
 
-    # 2. Fallback: кэш из bot_data (если есть)
-    if not breeds and isinstance(bot_data, dict):
-        cached = bot_data.get("available_breeds", [])
-        if cached:
+    # 2. Fallback: только если была ошибка (не пустой список!)
+    if not breeds and use_fallback:
+        if isinstance(bot_data, dict) and bot_data.get("available_breeds"):
+            cached = bot_data["available_breeds"]
             logger.info(f"🔁 Используем кэшированные породы из bot_data: {len(cached)} шт.")
             breeds = cached
+        elif BREEDS:
+            logger.info("🔁 Используем статичный список BREEDS как fallback")
+            breeds = BREEDS
 
-    # 3. Fallback: статичный список
-    if not breeds:
-        logger.info("🔁 Используем статичный список BREEDS как fallback")
-        breeds = BREEDS
-
-    # Фильтрация и сортировка
+    # 3. Фильтрация: только породы, для которых есть эмодзи
     unique_breeds = sorted({b for b in breeds if b in BREED_EMOJI})
 
     if not unique_breeds:
-        logger.warning("⚠️ Нет доступных пород для отображения")
+        logger.info("🚫 Нет доступных пород для отображения")
         return ReplyKeyboardMarkup(
             [["Нет доступных пород"]],
             resize_keyboard=True,
