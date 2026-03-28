@@ -29,12 +29,10 @@ from telegram.ext import (
     CommandHandler,
 )
 import asyncio
-import nest_asyncio  # ← добавлен
 
 # --- 🛠️ ФИКС ДЛЯ WINDOWS ---
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    nest_asyncio.apply()
 
 # --- 🚀 Версия бота ---
 BOT_VERSION = "v4.9.9"
@@ -571,25 +569,18 @@ def register_handlers(application: Application):
         application.add_handler(CommandHandler("report", debug_report), group=3)
         logger.info("🔧 Команда /report доступна (DEBUG)")
 
-    # ✅ УДАЛЕНО: setup_backup_job здесь — теперь он в post_init
-    logger.debug("🔧 Планировщик автобэкапа будет настроен в post_init")
-
     logger.info("✅ Все обработчики успешно зарегистрированы.")
 
 
-# === АСИНХРОННЫЙ ЗАПУСК ===
-async def main_async():
-    logger.info("🚀 Запуск бота...")
-
+# ================== УПРОЩЁННЫЙ ЗАПУСК ==================
+if __name__ == "__main__":
     from telegram.request import HTTPXRequest
 
-    # ✅ Убран max_retries — он больше не поддерживается
     request = HTTPXRequest(
         connect_timeout=20.0,
         read_timeout=30.0,
         write_timeout=30.0,
         pool_timeout=10.0,
-        # max_retries=3 ← ❌ удалён
     )
 
     app = (
@@ -601,34 +592,12 @@ async def main_async():
         .build()
     )
 
-    # ✅ Инициализируем до регистрации обработчиков
-    await app.initialize()
-    logger.info("✅ Бот инициализирован")
-
     register_handlers(app)
-    logger.info("✅ Все обработчики зарегистрированы")
 
     if DROP_PENDING_UPDATES:
         logger.warning("🧹 Удаление старых обновлений...")
 
     logger.info("👂 Бот запущен и ожидает сообщения...")
-    await app.run_polling(
-        drop_pending_updates=DROP_PENDING_UPDATES,
-        close_loop=True
-    )
 
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main_async())
-    except KeyboardInterrupt:
-        logger.info("🛑 Бот остановлен вручную.")
-    except RuntimeError as e:
-        if "Cannot close a running event loop" in str(e):
-            logger.info("✅ Бот остановлен. Игнорируется ошибка закрытия event loop.")
-        else:
-            logger.critical(f"💀 Критическая ошибка: {e}", exc_info=True)
-            sys.exit(1)
-    except Exception as e:
-        logger.critical(f"💀 Критическая ошибка: {e}", exc_info=True)
-        sys.exit(1)
+    # Запускаем бота — этот метод блокирующий и сам управляет циклом событий
+    app.run_polling(drop_pending_updates=DROP_PENDING_UPDATES)
