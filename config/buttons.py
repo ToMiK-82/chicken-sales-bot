@@ -410,7 +410,7 @@ def get_breeds_keyboard(bot_data: Optional[dict] = None) -> ReplyKeyboardMarkup:
     emoji_map = bot_data.get("breed_emoji", BREED_EMOJI)
 
     if not breeds:
-        return ReplyKeyboardMarkup([["Нет доступных пород"]], resize_keyboard=True)
+        return None
 
     if not isinstance(breeds, list):
         logger.error(f"❌ get_breeds_keyboard: ожидается list, получено {type(breeds)}")

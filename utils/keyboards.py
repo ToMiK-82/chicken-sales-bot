@@ -82,11 +82,7 @@ async def get_breeds_keyboard(bot_data: Optional[dict] = None) -> ReplyKeyboardM
 
     if not unique_breeds:
         logger.info("🚫 Нет доступных пород для отображения")
-        return ReplyKeyboardMarkup(
-            [["Нет доступных пород"]],
-            resize_keyboard=True,
-            one_time_keyboard=False
-        )
+        return None
 
     # Формируем кнопки по 3 в ряд
     buttons = []

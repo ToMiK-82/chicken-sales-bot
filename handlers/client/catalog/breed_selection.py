@@ -35,6 +35,10 @@ async def _back_to_breed_selection(update: Update, context: ContextTypes.DEFAULT
     # ✅ Теперь импорт из utils.keyboards — работает!
     keyboard = await get_breeds_keyboard(context.application.bot_data)
 
+    if keyboard is None:
+        await safe_reply(update, context, "🚫 Нет доступных пород.")
+        return ConversationHandler.END
+    
     await safe_reply(update, context, "🐔 Выберите породу:", reply_markup=keyboard)
     return SELECTING_BREED
 

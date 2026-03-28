@@ -623,6 +623,12 @@ if __name__ == "__main__":
         asyncio.run(main_async())
     except KeyboardInterrupt:
         logger.info("🛑 Бот остановлен вручную.")
+    except RuntimeError as e:
+        if "Cannot close a running event loop" in str(e):
+            logger.info("✅ Бот остановлен. Игнорируется ошибка закрытия event loop.")
+        else:
+            logger.critical(f"💀 Критическая ошибка: {e}", exc_info=True)
+            sys.exit(1)
     except Exception as e:
         logger.critical(f"💀 Критическая ошибка: {e}", exc_info=True)
         sys.exit(1)
