@@ -29,9 +29,10 @@ CONTACTS_VIEW = 0
 contacts_handler = None
 
 def make_tel_link(phone: str) -> str:
-    """Преобразует номер в кликабельный формат tel:+7..."""
-    cleaned = phone.replace(" ", "").replace("-", "").replace("+", "")
-    return f"tel:+7{cleaned}"
+    """Преобразует номер в кликабельный формат tel:... (сохраняет +)."""
+    # Убираем только пробелы и тире, плюс оставляем
+    cleaned = phone.replace(" ", "").replace("-", "")
+    return f"tel:{cleaned}"
 
 async def contacts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -53,7 +54,7 @@ async def contacts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"- Андрей 📞 {make_tel_link('+7 978 589 91 67')}\n\n"
             "🌍 Запорожская область\n"
             f"- Павел 📞 {make_tel_link('+7 990 144 36 63')}\n"
-            "  Региональный склад, Запорожская область, г. Мелитополь, Каховское шоссе, 24/2;\n\n"
+            "  Региональный склад, Запорожская область, г. Мелитополь, Каховское шоссе, 24/2;\n"
             f"- Вадим 📞 {make_tel_link('+7 990 144 70 03')}\n\n"
             "📞 Если нужна помощь с выбором или расчётом объёма — просто начните оформление, и мы поможем!\n\n"
             f"🌐 Полный ассортимент на сайте — <a href='{WEBSITE_URL}'>ZOOTOPIA.RU</a>"
