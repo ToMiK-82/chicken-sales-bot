@@ -28,6 +28,24 @@ ORDERS_BUTTON_TEXT = "📦 Мои заказы"
 IMAGE_PATH = "images/zootopia.jpg"
 WEBSITE_URL = "https://zootopia.ru"
 
+# === Payload кнопок (единые для Telegram и MAX) ===
+# Маршрутизатор матчит именно эти строки — они же кладутся в payload кнопок.
+PAYLOAD_START = "/start"
+PAYLOAD_SCHEDULE = "schedule"
+PAYLOAD_PROMOTIONS = "promotions"
+PAYLOAD_CATALOG = "catalog"
+PAYLOAD_CONTACTS = "contacts"
+PAYLOAD_ORDERS = "orders"
+PAYLOAD_HELP = "help"
+PAYLOAD_BACK = "back"
+PAYLOAD_CONFIRM_ORDER = "confirm_order"
+PAYLOAD_CANCEL_ORDER = "cancel_order"
+
+PAYLOAD_CATALOG_BREED = "catalog_breed_"      # + порода
+PAYLOAD_CATALOG_INCUBATOR = "catalog_incubator_"  # + инкубатор
+PAYLOAD_CATALOG_DATE = "catalog_date_"        # + дата
+PAYLOAD_CANCEL_ORDER_PREFIX = "cancel_order_" # + id заказа
+
 
 def make_tel_link(phone: str) -> str:
     cleaned = phone.replace(" ", "").replace("-", "").replace("+", "")
@@ -56,6 +74,17 @@ CONFIRM_ORDER = "confirm_order"
 # === Вспомогательные функции ===
 def get_today_str():
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def _back_button():
+    """Стандартная кнопка «Назад» для ответов."""
+    return [[{"type": "message", "text": "⬅️ Назад", "payload": PAYLOAD_BACK}]]
+
+
+def _reset_session(session) -> None:
+    """Полная очистка сессии пользователя."""
+    session.state = "idle"
+    session.data.clear()
 
 
 async def get_available_breeds_from_db():
@@ -151,7 +180,8 @@ async def get_formatted_promotions() -> List[Dict[str, Any]]:
 
                 result.append({
                     "text": text,
-                    "image_url": image_url
+                    "image_url": image_url,
+                    "format": "markdown",
                 })
             except Exception as e:
                 logger.error(f"❌ Ошибка формирования акции: {e}", exc_info=True)
@@ -166,7 +196,14 @@ async def get_formatted_promotions() -> List[Dict[str, Any]]:
 # === 3. Справка — много сообщений ===
 async def get_help_response(context: Dict[str, Any]) -> List[Dict[str, Any]]:
     try:
-        bot_version = context["bot"].application.bot_data.get("BOT_VERSION", "?.?")
+        # bot может быть None (MAX-адаптер) — не падаем, подставляем метку канала
+        bot = context.get("bot") if context else None
+        bot_version = "?.?"
+        if bot is not None:
+            try:
+                bot_version = bot.application.bot_data.get("BOT_VERSION", "?.?")
+            except Exception:
+                bot_version = "?.?"
 
         main_text = (
             "📘 *Справка: как пользоваться ботом?*\n\n"
@@ -205,9 +242,9 @@ async def get_help_response(context: Dict[str, Any]) -> List[Dict[str, Any]]:
         )
 
         return [
-            {"text": main_text},
-            {"text": commands_text},
-            {"text": contact_text}
+            {"text": main_text, "format": "markdown"},
+            {"text": commands_text, "format": "markdown"},
+            {"text": contact_text, "format": "markdown"},
         ]
 
     except Exception as e:
@@ -293,7 +330,7 @@ async def get_orders_response(user_id: str) -> List[Dict[str, Any]]:
                     buttons.append([{
                         "type": "message",
                         "text": f"❌ Отменить №{idx}",
-                        "payload": f"cancel_order_{row['id']}"
+                        "payload": f"{PAYLOAD_CANCEL_ORDER_PREFIX}{row['id']}"
                     }])
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки заказа {row.get('id', 'unknown')}: {e}")
@@ -302,7 +339,7 @@ async def get_orders_response(user_id: str) -> List[Dict[str, Any]]:
         full_text = "\n\n".join(message_lines)
 
         # Общие кнопки
-        buttons.append([{"type": "message", "text": "⬅️ Назад", "payload": "back"}])
+        buttons += _back_button()
 
         return [{
             "text": full_text,
@@ -420,10 +457,12 @@ async def handle_catalog_breed(user_id: str, breed: str) -> Dict[str, Any]:
 
 async def handle_catalog_incubator(user_id: str, incubator: str) -> Dict[str, Any]:
     session = get_session(user_id)
+    # Защита: если клик пришёл вне потока (без выбранной породы) — не падаем
+    breed = session.data.get("selected_breed")
+    if not breed:
+        return {"text": "⚠️ Начните с выбора породы.", "buttons": _back_button()}
     session.data["selected_incubator"] = incubator
     session.state = SELECTING_DATE
-
-    breed = session.data["selected_breed"]
     result = await db.execute_read(
         "SELECT date, available_quantity, price FROM stocks WHERE breed = ? AND incubator = ? AND available_quantity > 0 AND status = 'active' ORDER BY date ASC",
         (breed, incubator)
@@ -444,7 +483,7 @@ async def handle_catalog_incubator(user_id: str, incubator: str) -> Dict[str, An
     buttons = [[{
         "type": "message",
         "text": f"📅 {datetime.strptime(d, '%Y-%m-%d').strftime('%d.%m')} | 📦{qty} шт. | 💰{int(price)} руб.",
-        "payload": f"catalog_date_{d}"
+        "payload": f"{PAYLOAD_CATALOG_DATE}{d}"
     }] for d, qty, price in filtered]
 
     buttons.append([{"type": "message", "text": "⬅️ Назад", "payload": "back"}])
@@ -476,7 +515,7 @@ async def handle_catalog_date(user_id: str, date_str: str) -> Dict[str, Any]:
 
     return {
         "text": f"📅 *Поставка:* {delivery_date}\n📦 *Доступно:* {qty} шт.\n💰 *Цена:* {int(price)} руб.\n\nВведите количество:",
-        "buttons": [[{"type": "message", "text": "⬅️ Назад", "payload": "back"}]],
+        "buttons": _back_button(),
         "format": "markdown"
     }
 
@@ -500,13 +539,15 @@ async def handle_catalog_quantity(user_id: str, text: str) -> Dict[str, Any]:
     else:
         return {
             "text": "📞 Введите номер телефона в формате +7XXXXXXXXXX",
-            "buttons": [[{"type": "message", "text": "⬅️ Назад", "payload": "back"}]]
+            "buttons": _back_button()
         }
 
 
 async def handle_catalog_phone(user_id: str, phone: str) -> Dict[str, Any]:
     session = get_session(user_id)
-    qty = session.data["selected_quantity"]
+    qty = session.data.get("selected_quantity")
+    if qty is None:
+        return {"text": "⚠️ Начните оформление заново.", "buttons": _back_button()}
 
     if phone.startswith("8") and len(phone) == 11:
         phone = "+7" + phone[1:]
@@ -554,10 +595,10 @@ async def confirm_order_preview(user_id: str) -> Dict[str, Any]:
         ),
         "buttons": [
             [
-                {"type": "message", "text": "✅ Подтвердить", "payload": "confirm_order"},
-                {"type": "message", "text": "❌ Отменить", "payload": "cancel_order"}
+                {"type": "message", "text": "✅ Подтвердить", "payload": PAYLOAD_CONFIRM_ORDER},
+                {"type": "message", "text": "❌ Отменить", "payload": PAYLOAD_CANCEL_ORDER}
             ],
-            [{"type": "message", "text": "⬅️ Назад", "payload": "back"}]
+            [{"type": "message", "text": "⬅️ Назад", "payload": PAYLOAD_BACK}]
         ],
         "format": "markdown"
     }
@@ -567,12 +608,19 @@ async def confirm_order_final(user_id: str) -> Dict[str, Any]:
     session = get_session(user_id)
     data = session.data
 
+    # Защита: кнопка «Подтвердить» нажата вне активного потока заказа
+    required = ("selected_breed", "selected_incubator", "selected_date", "selected_quantity", "selected_price", "phone")
+    if not all(k in data for k in required):
+        _reset_session(session)
+        return {"text": "⚠️ Сессия заказа истекла. Начните заново.", "buttons": _back_button()}
+
     stock_id = await db.get_stock_id(data["selected_breed"], data["selected_incubator"], data["selected_date"])
     if not stock_id:
         return {"text": "❌ Партия не найдена."}
 
     stock = await db.execute_read("SELECT available_quantity FROM stocks WHERE id = ?", (stock_id,))
     if not stock or data["selected_quantity"] > stock[0][0]:
+        _reset_session(session)
         return {"text": "❌ Количество изменилось. Попробуйте снова."}
 
     success = await db.execute_transaction([
@@ -596,20 +644,55 @@ async def confirm_order_final(user_id: str) -> Dict[str, Any]:
     except ValueError:
         delivery_date = data["selected_date"]
 
-    session.state = "idle"
-    session.data.clear()
+    # ФОРМИРУЕМ сообщение ДО очистки сессии (data — ссылка на session.data!)
+    result_text = (
+        f"✅ *Заказ оформлен!* 🎉\n\n"
+        f"🐔 *Порода:* {escape(data['selected_breed'])}\n"
+        f"🏭 *Инкубатор:* {escape(data['selected_incubator'])}\n"
+        f"📅 *Поставка:* {delivery_date}\n"
+        f"📦 *Кол-во:* {data['selected_quantity']} шт.\n"
+        f"📞 *Телефон:* {data['phone']}\n\n"
+        "Спасибо за заказ! Мы свяжемся с вами за день до поставки."
+    )
+
+    _reset_session(session)
 
     return {
-        "text": (
-            f"✅ *Заказ оформлен!* 🎉\n\n"
-            f"🐔 *Порода:* {escape(data['selected_breed'])}\n"
-            f"🏭 *Инкубатор:* {escape(data['selected_incubator'])}\n"
-            f"📅 *Поставка:* {delivery_date}\n"
-            f"📦 *Кол-во:* {data['selected_quantity']} шт.\n"
-            f"📞 *Телефон:* {data['phone']}\n\n"
-            "Спасибо за заказ! Мы свяжемся с вами за день до поставки."
-        ),
+        "text": result_text,
         "format": "markdown"
+    }
+
+
+# === Главное меню (единая точка) ===
+def main_menu_response() -> Dict[str, Any]:
+    return {
+        "text": "🐔 Добро пожаловать!\n\nДоступные команды:\n• График\n• Акции\n• Каталог\n• Справка",
+        "buttons": [
+            [
+                {"type": "message", "text": "📅 График", "payload": PAYLOAD_SCHEDULE},
+                {"type": "message", "text": "🎁 Акции", "payload": PAYLOAD_PROMOTIONS}
+            ],
+            [
+                {"type": "message", "text": "📋 Каталог", "payload": PAYLOAD_CATALOG},
+                {"type": "message", "text": "📞 Контакты", "payload": PAYLOAD_CONTACTS}
+            ],
+            [
+                {"type": "message", "text": ORDERS_BUTTON_TEXT, "payload": PAYLOAD_ORDERS},
+                {"type": "message", "text": "ℹ️ Справка", "payload": PAYLOAD_HELP}
+            ]
+        ]
+    }
+
+
+def _fallback_menu_response() -> Dict[str, Any]:
+    return {
+        "text": "👋 Привет! Используйте меню.",
+        "buttons": [
+            [
+                {"type": "message", "text": "📋 Каталог", "payload": PAYLOAD_CATALOG},
+                {"type": "message", "text": "ℹ️ Справка", "payload": PAYLOAD_HELP}
+            ]
+        ]
     }
 
 
@@ -627,27 +710,23 @@ async def handle_message_from_messenger(messenger: str, user_id: str, text: str,
 
     session = get_session(user_id)
 
+    # Нормализуем входящий текст (payload кнопок тоже приходит сюда как text)
+    raw_text = (text or "").strip()
+    text_lower = raw_text.lower()
+
     # --- /start ---
-    if text == "/start":
-        session.state = "idle"
-        session.data.clear()
-        return {
-            "text": "🐔 Добро пожаловать!\n\nДоступные команды:\n• График\n• Акции\n• Каталог\n• Справка",
-            "buttons": [
-                [{"type": "message", "text": "📅 График", "payload": "schedule"}, {"type": "message", "text": "🎁 Акции", "payload": "promotions"}],
-                [{"type": "message", "text": "📋 Каталог", "payload": "catalog"}, {"type": "message", "text": "📞 Контакты", "payload": "contacts"}],
-                [{"type": "message", "text": ORDERS_BUTTON_TEXT, "payload": "orders"}, {"type": "message", "text": "ℹ️ Справка", "payload": "help"}]
-            ]
-        }
+    if raw_text == "/start" or raw_text == PAYLOAD_START:
+        _reset_session(session)
+        return main_menu_response()
 
     # --- Мои заказы ---
-    elif "мои заказы" in text.lower() or text == "orders":
+    if raw_text == PAYLOAD_ORDERS or "мои заказы" in text_lower:
         return await get_orders_response(user_id)
 
-    # --- Отмена заказа ---
-    elif text.startswith("cancel_order_"):
+    # --- Отмена заказа (payload: cancel_order_<id>) ---
+    if raw_text.startswith(PAYLOAD_CANCEL_ORDER_PREFIX):
         try:
-            order_id = int(text.split("_")[-1])
+            order_id = int(raw_text.split("_")[-1])
             success, msg = await cancel_order_by_id(order_id, user_id)
             if success:
                 return await get_orders_response(user_id)
@@ -657,65 +736,57 @@ async def handle_message_from_messenger(messenger: str, user_id: str, text: str,
             return {"text": "❌ Неверный формат номера заказа."}
 
     # --- График ---
-    elif "график" in text.lower():
+    if raw_text == PAYLOAD_SCHEDULE or "график" in text_lower:
         text_only = await format_schedule_message()
-        return {"text": text_only}
+        return {"text": text_only, "format": "markdown"}
 
     # --- Акции ---
-    elif "акции" in text.lower():
+    if raw_text == PAYLOAD_PROMOTIONS or "акции" in text_lower:
         return await get_formatted_promotions()
 
     # --- Контакты ---
-    elif "контакты" in text.lower() or text == "contacts":
+    if raw_text == PAYLOAD_CONTACTS or "контакты" in text_lower:
         return await get_contacts_response()
 
     # --- Справка ---
-    elif "справка" in text.lower() or text == "/help":
+    if raw_text == PAYLOAD_HELP or "справка" in text_lower or raw_text == "/help":
         return await get_help_response(context)
 
     # --- Каталог ---
-    elif "каталог" in text.lower():
+    if raw_text == PAYLOAD_CATALOG or "каталог" in text_lower:
         return await start_catalog_flow(user_id, chat_id)
 
     # --- Callback: выбор породы ---
-    elif text.startswith("__callback:catalog_breed_"):
-        breed = text[len("__callback:catalog_breed_"):]
+    if raw_text.startswith(PAYLOAD_CATALOG_BREED):
+        breed = raw_text[len(PAYLOAD_CATALOG_BREED):]
         return await handle_catalog_breed(user_id, breed)
 
     # --- Callback: инкубатор ---
-    elif text.startswith("__callback:catalog_incubator_"):
-        inc = text[len("__callback:catalog_incubator_"):]
+    if raw_text.startswith(PAYLOAD_CATALOG_INCUBATOR):
+        inc = raw_text[len(PAYLOAD_CATALOG_INCUBATOR):]
         return await handle_catalog_incubator(user_id, inc)
 
     # --- Callback: дата ---
-    elif text.startswith("__callback:catalog_date_"):
-        date_str = text[len("__callback:catalog_date_"):]
+    if raw_text.startswith(PAYLOAD_CATALOG_DATE):
+        date_str = raw_text[len(PAYLOAD_CATALOG_DATE):]
         return await handle_catalog_date(user_id, date_str)
 
-    # --- Callback: подтвердить/отменить ---
-    elif text == "__callback:confirm_order":
+    # --- Callback: подтвердить/отменить заказ ---
+    if raw_text == PAYLOAD_CONFIRM_ORDER:
         return await confirm_order_final(user_id)
-    elif text == "__callback:cancel_order":
-        session.state = "idle"
-        session.data.clear()
+    if raw_text == PAYLOAD_CANCEL_ORDER:
+        _reset_session(session)
         return {"text": "❌ Заказ отменён."}
 
-    # --- Назад ---
-    elif "назад" in text.lower() or "__callback:back__" in text:
-        session.state = "idle"
-        session.data.clear()
-        return await handle_message_from_messenger(messenger, user_id, "/start", chat_id, bot)
+    # --- Назад / отмена ввода ---
+    if raw_text == PAYLOAD_BACK or "назад" in text_lower:
+        _reset_session(session)
+        return main_menu_response()
 
-    # --- Ввод количества или телефона ---
-    else:
-        if session.state == CHOOSE_QUANTITY:
-            return await handle_catalog_quantity(user_id, text)
-        elif session.state == ENTER_PHONE:
-            return await handle_catalog_phone(user_id, text)
+    # --- Ввод количества или телефона (активный диалог) ---
+    if session.state == CHOOSE_QUANTITY:
+        return await handle_catalog_quantity(user_id, raw_text)
+    if session.state == ENTER_PHONE:
+        return await handle_catalog_phone(user_id, raw_text)
 
-        return {
-            "text": "👋 Привет! Используйте меню.",
-            "buttons": [
-                [{"type": "message", "text": "📋 Каталог", "payload": "catalog"}, {"type": "message", "text": "ℹ️ Справка", "payload": "help"}]
-            ]
-        }
+    return _fallback_menu_response()
