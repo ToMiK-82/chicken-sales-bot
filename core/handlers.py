@@ -27,6 +27,8 @@ CONTACTS_BUTTON_TEXT = "📞 Контакты"
 ORDERS_BUTTON_TEXT = "📦 Мои заказы"
 IMAGE_PATH = "images/zootopia.jpg"
 WEBSITE_URL = "https://zootopia.ru"
+# Версия бота (для MAX-адаптера, где нет Telegram-контекста; в Telegram берётся из bot_data)
+BOT_VERSION = os.getenv("BOT_VERSION", "v4.9.9")
 
 # === Payload кнопок (единые для Telegram и MAX) ===
 # Маршрутизатор матчит именно эти строки — они же кладутся в payload кнопок.
@@ -227,12 +229,12 @@ async def get_help_response(context: Dict[str, Any]) -> List[Dict[str, Any]]:
     try:
         # bot может быть None (MAX-адаптер) — не падаем, подставляем метку канала
         bot = context.get("bot") if context else None
-        bot_version = "?.?"
+        bot_version = BOT_VERSION
         if bot is not None:
             try:
-                bot_version = bot.application.bot_data.get("BOT_VERSION", "?.?")
+                bot_version = bot.application.bot_data.get("BOT_VERSION", BOT_VERSION)
             except Exception:
-                bot_version = "?.?"
+                bot_version = BOT_VERSION
 
         main_text = (
             "📘 <b>Справка: как пользоваться ботом?</b>\n\n"
