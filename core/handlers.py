@@ -753,6 +753,13 @@ async def handle_message_from_messenger(
     raw_text = (text or "").strip()
     text_lower = raw_text.lower()
 
+    # --- Админ-панель (MAX) ---
+    admin_trigger = raw_text in ("/admin", "админ", "🔐 Админ-панель")
+    if admin_trigger or raw_text.startswith("admin_") or str(session.state).startswith("admin_"):
+        from core.admin import handle_admin_message
+
+        return await handle_admin_message(messenger, user_id, raw_text, chat_id, bot, user_name)
+
     # --- /start ---
     if raw_text == "/start" or raw_text == PAYLOAD_START:
         _reset_session(session)
