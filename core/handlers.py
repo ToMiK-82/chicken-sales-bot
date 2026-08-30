@@ -50,8 +50,8 @@ PAYLOAD_CANCEL_ORDER_PREFIX = "cancel_order_" # + id заказа
 
 
 def make_tel_link(phone: str) -> str:
-    cleaned = phone.replace(" ", "").replace("-", "").replace("+", "")
-    return f"tel:+7{cleaned}"
+    cleaned = phone.replace(" ", "").replace("-", "")
+    return f"tel:{cleaned}"
 
 
 def _format_date(date_str: str) -> str:
@@ -304,7 +304,7 @@ async def get_contacts_response() -> List[Dict[str, Any]]:
         f"- Павел 📞 {make_tel_link('+7 990 144 36 63')}\n"
         "  Региональный склад, Запорожская область, г. Мелитополь, Каховское шоссе, 24/2;\n"
         f"- Вадим 📞 {make_tel_link('+7 990 144 70 03')}\n\n"
-        "Если нужна помощь с выбором или расчётом объёма — просто начните оформление, и мы поможем!\n\n"
+        "📞 Если нужна помощь с выбором или расчётом объёма — просто начните оформление, и мы поможем!\n\n"
         f"🌐 Полный ассортимент на сайте — <a href='{WEBSITE_URL}'>ZOOTOPIA.RU</a>"
     )
 
