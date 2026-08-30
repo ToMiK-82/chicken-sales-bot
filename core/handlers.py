@@ -418,9 +418,10 @@ async def cancel_order_by_id(order_id: int, user_id: str) -> Tuple[bool, str]:
         if not row["stock_id"]:
             return False, "Заказ не привязан к партии."
 
-        # Откатываем количество
+        # Откатываем количество и оживляем партию, если она была распродана
         success = await db.execute_transaction([
             ("UPDATE stocks SET available_quantity = available_quantity + ? WHERE id = ?", (row["quantity"], row["stock_id"])),
+            ("UPDATE stocks SET status = 'active' WHERE id = ? AND available_quantity > 0", (row["stock_id"],)),
             ("UPDATE orders SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?", (order_id,))
         ])
 

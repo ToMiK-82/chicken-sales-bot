@@ -57,6 +57,11 @@ async def cancel_order_by_id(order_id: int, context=None, user_id=None, admin_in
                 "UPDATE stocks SET available_quantity = available_quantity + ? WHERE id = ?",
                 (quantity, stock_id)
             )
+            # Оживляем партию, если она была распродана и помечена неактивной
+            await db.execute_write(
+                "UPDATE stocks SET status = 'active' WHERE id = ? AND available_quantity > 0",
+                (stock_id,)
+            )
             logger.info(f"🔁 {quantity} шт. возвращены в партию {stock_id}")
 
         await db.execute_write("UPDATE orders SET status = 'cancelled' WHERE id = ?", (order_id,))

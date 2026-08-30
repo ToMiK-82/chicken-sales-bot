@@ -499,9 +499,22 @@ async def handle_confirm_edit_stock(update: Update, context: ContextTypes.DEFAUL
         if action == "quantity":
             new_value = context.user_data.get('edit_quantity')
             field_name = "quantity"
-            old_row = await db.execute_read("SELECT quantity FROM stocks WHERE id = ?", (stock_id,))
-            old_value = old_row[0][0] if old_row else "неизвестно"
-            await db.execute_write("UPDATE stocks SET quantity = ? WHERE id = ?", (new_value, stock_id))
+            old_row = await db.execute_read("SELECT quantity, available_quantity FROM stocks WHERE id = ?", (stock_id,))
+            if not old_row:
+                await exit_to_admin_menu(update, context, "❌ Партия не найдена.")
+                return ConversationHandler.END
+            old_qty, old_avail = old_row[0]
+            old_value = old_qty
+            # Продано (quantity - available) не меняется: новый остаток = новое общее - продано
+            sold = old_qty - old_avail
+            new_avail = new_value - sold
+            if new_avail < 0:
+                await exit_to_admin_menu(update, context, f"❌ Нельзя: уже продано {sold} шт.")
+                return ConversationHandler.END
+            await db.execute_write(
+                "UPDATE stocks SET quantity = ?, available_quantity = ? WHERE id = ?",
+                (new_value, new_avail, stock_id)
+            )
 
         elif action == "date":
             new_value = context.user_data.get('edit_date')

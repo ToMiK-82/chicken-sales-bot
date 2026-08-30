@@ -51,7 +51,8 @@ ORDER_KEYS_TO_CLEAR = [
     "edit_order_id",
     "edit_field",
     "edit_new_value",
-    "edit_old_value"
+    "edit_old_value",
+    "edit_target_stock_id",
 ]
 
 # === Состояния ===
@@ -493,26 +494,47 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await safe_reply(update, context, "❌ Введите положительное число.")
             return WAITING_EDIT_VALUE
 
-        if new_qty <= current_qty:
-            pass
-        else:
-            available, current_stock = await check_stock_availability(
-                breed, incubator, delivery_date, new_qty
-            )
-            if not available:
-                await safe_reply(
-                    update,
-                    context,
-                    f"❌ Недостаточно остатков.\n"
-                    f"📌 Пара: <b>{escape(breed)}</b> + <b>{escape(incubator)}</b>\n"
-                    f"📅 Поставка: <b>{format_date_display(delivery_date)}</b>\n"
-                    f"📦 В наличии: <b>{current_stock}</b> шт\n"
-                    f"🛒 Новое кол-во: <b>{new_qty}</b> шт\n\n"
-                    f"Нельзя увеличить заказ.",
-                    parse_mode="HTML",
-                    reply_markup=get_back_only_keyboard()
+        if new_qty > current_qty:
+            # Увеличение: нужно дополнительно diff шт. из партии, к которой привязан заказ
+            diff = new_qty - current_qty
+            order_stock = await db.execute_read("SELECT stock_id FROM orders WHERE id = ?", (order_id,))
+            stock_id = order_stock[0]["stock_id"] if order_stock and order_stock[0]["stock_id"] else None
+
+            if stock_id:
+                st = await db.execute_read("SELECT available_quantity FROM stocks WHERE id = ?", (stock_id,))
+                current_stock = st[0]["available_quantity"] if st else 0
+                if current_stock < diff:
+                    await safe_reply(
+                        update,
+                        context,
+                        f"❌ Недостаточно остатков.\n"
+                        f"📌 Заказ №<b>{order_id}</b> привязан к партии 🏷️<code>{stock_id}</code>\n"
+                        f"📦 В наличии: <b>{current_stock}</b> шт\n"
+                        f"🛒 Нужно дополнительно: <b>{diff}</b> шт\n\n"
+                        f"Нельзя увеличить заказ.",
+                        parse_mode="HTML",
+                        reply_markup=get_back_only_keyboard()
+                    )
+                    return WAITING_EDIT_VALUE
+            else:
+                # Заказ без привязки к партии — проверяем по всей паре порода/инкубатор/дата
+                available, current_stock = await check_stock_availability(
+                    breed, incubator, delivery_date, new_qty
                 )
-                return WAITING_EDIT_VALUE
+                if not available:
+                    await safe_reply(
+                        update,
+                        context,
+                        f"❌ Недостаточно остатков.\n"
+                        f"📌 Пара: <b>{escape(breed)}</b> + <b>{escape(incubator)}</b>\n"
+                        f"📅 Поставка: <b>{format_date_display(delivery_date)}</b>\n"
+                        f"📦 В наличии: <b>{current_stock}</b> шт\n"
+                        f"🛒 Новое кол-во: <b>{new_qty}</b> шт\n\n"
+                        f"Нельзя увеличить заказ.",
+                        parse_mode="HTML",
+                        reply_markup=get_back_only_keyboard()
+                    )
+                    return WAITING_EDIT_VALUE
         new_value = new_qty
 
     elif field == "date":
@@ -521,6 +543,34 @@ async def waiting_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await safe_reply(update, context, "❌ Введите дату в формате ДД-ММ-ГГГГ.")
             return WAITING_EDIT_VALUE
         new_value = parsed
+
+    # Если меняем породу/инкубатор/дату — проверяем новую партию (перенос резерва)
+    if field in ("breed", "incubator", "date"):
+        new_breed = new_value if field == "breed" else breed
+        new_incubator = new_value if field == "incubator" else incubator
+        new_date = new_value if field == "date" else delivery_date
+        target = await db.execute_read(
+            "SELECT id, available_quantity FROM stocks WHERE breed = ? AND incubator = ? AND date = ? AND status = 'active' LIMIT 1",
+            (new_breed, new_incubator, new_date)
+        )
+        if not target:
+            await safe_reply(
+                update, context,
+                f"❌ Нет активной партии под новое значение.\n"
+                f"📌 <b>{escape(new_breed)}</b> | <b>{escape(new_incubator)}</b> | <b>{format_date_display(new_date)}</b>",
+                parse_mode="HTML",
+                reply_markup=get_back_only_keyboard()
+            )
+            return WAITING_EDIT_VALUE
+        if int(target[0]["available_quantity"]) < current_qty:
+            await safe_reply(
+                update, context,
+                f"❌ В партии недостаточно остатков: <b>{target[0]['available_quantity']}</b> шт (нужно {current_qty}).",
+                parse_mode="HTML",
+                reply_markup=get_back_only_keyboard()
+            )
+            return WAITING_EDIT_VALUE
+        context.user_data["edit_target_stock_id"] = target[0]["id"]
 
     context.user_data["edit_new_value"] = new_value
     context.user_data["edit_old_value"] = order_data[field]
@@ -625,18 +675,47 @@ async def confirm_edit_final(update: Update, context: ContextTypes.DEFAULT_TYPE)
         query = field_queries[field]
         await db.execute_write(query, (new_value, order_id))
 
-        # Если меняем количество — корректируем остатки
+        # Если меняем породу/инкубатор/дату — переносим резерв между партиями
+        if field in ("breed", "incubator", "date"):
+            old_stock_id = old_order.get("stock_id")
+            target_stock_id = context.user_data.get("edit_target_stock_id")
+            if target_stock_id and old_stock_id and old_stock_id != target_stock_id:
+                # возвращаем количество в старую партию и оживляем её при необходимости
+                await db.execute_write(
+                    "UPDATE stocks SET available_quantity = available_quantity + ? WHERE id = ?",
+                    (old_qty, old_stock_id)
+                )
+                await db.execute_write(
+                    "UPDATE stocks SET status = 'active' WHERE id = ? AND available_quantity > 0",
+                    (old_stock_id,)
+                )
+                # занимаем количество в новой партии
+                await db.execute_write(
+                    "UPDATE stocks SET available_quantity = available_quantity - ? WHERE id = ? AND available_quantity >= ?",
+                    (old_qty, target_stock_id, old_qty)
+                )
+                logger.info(
+                    f"🔁 Резерв заказа {order_id}: +{old_qty} в партию {old_stock_id}, "
+                    f"-{old_qty} из партии {target_stock_id}"
+                )
+            if target_stock_id:
+                await db.execute_write(
+                    "UPDATE orders SET stock_id = ? WHERE id = ?",
+                    (target_stock_id, order_id)
+                )
+
+        # Если меняем количество — корректируем остатки ТОЛЬКО в партии заказа
         if field == "quantity":
             new_qty = int(new_value)
             diff = new_qty - old_qty  # + = уменьшаем остаток, - = возвращаем
-            if diff != 0:
+            if diff != 0 and old_order.get("stock_id"):
                 result = await db.execute_write(
                     """
                     UPDATE stocks 
                     SET available_quantity = available_quantity - ?
-                    WHERE breed = ? AND incubator = ? AND date = ?
+                    WHERE id = ?
                     """,
-                    (diff, old_order["breed"], old_order["incubator"], old_order["date"])
+                    (diff, old_order["stock_id"])
                 )
                 if result:
                     logger.info(f"🔁 Обновлён остаток: {diff:+d} шт для {old_order['breed']} | {old_order['incubator']} | {old_order['date']}")
