@@ -72,8 +72,27 @@ CONFIRM_ORDER = "confirm_order"
 
 
 # === Вспомогательные функции ===
+SEPARATOR = "────────────────"
+
+
 def get_today_str():
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def main_menu_buttons():
+    """Кнопки главного меню (аналог get_main_keyboard в Telegram)."""
+    return [
+        [
+            {"type": "message", "text": "🐔 Каталог", "payload": PAYLOAD_CATALOG},
+            {"type": "message", "text": "📅 График", "payload": PAYLOAD_SCHEDULE},
+            {"type": "message", "text": ORDERS_BUTTON_TEXT, "payload": PAYLOAD_ORDERS},
+        ],
+        [
+            {"type": "message", "text": "🎁 Акции", "payload": PAYLOAD_PROMOTIONS},
+            {"type": "message", "text": "📞 Контакты", "payload": PAYLOAD_CONTACTS},
+            {"type": "message", "text": "ℹ️ Справка", "payload": PAYLOAD_HELP},
+        ],
+    ]
 
 
 def _back_button():
@@ -116,7 +135,7 @@ async def format_schedule_message() -> str:
         if not result:
             return "📅 Нет активных поставок на ближайшее время."
 
-        message_lines = ["📦 *График поставок:*", ""]
+        message_lines = ["📦 <b>График поставок:</b>", SEPARATOR]
         for record in result:
             breed, incubator, raw_date, avail_qty, total_qty, price = record
             try:
@@ -143,13 +162,16 @@ async def format_schedule_message() -> str:
             incubator_safe = escape(incubator) if incubator else "Не указан"
 
             message_lines.append(
-                f"🐔 *Порода:* {breed_safe}\n"
-                f"🏢 *Инкубатор:* {incubator_safe}\n"
-                f"📅 *Поставка:* {formatted_date}\n"
-                f"{icon} *Доступно:* {avail} шт.\n"
-                f"💰 *Цена:* {price_value} руб."
+                f"🐔 <b>Порода:</b> {breed_safe}\n"
+                f"🏢 <b>Инкубатор:</b> {incubator_safe}\n"
+                f"📅 <b>Поставка:</b> {formatted_date}\n"
+                f"{icon} <b>Доступно:</b> {avail} шт.\n"
+                f"💰 <b>Цена:</b> {price_value} руб."
             )
-            message_lines.append("")
+            message_lines.append(SEPARATOR)
+
+        if message_lines and message_lines[-1] == SEPARATOR:
+            message_lines.pop()
 
         return "\n".join(message_lines).strip()
 
@@ -163,7 +185,7 @@ async def get_formatted_promotions() -> List[Dict[str, Any]]:
     try:
         promotions = await db.get_active_promotions()
         if not promotions:
-            return [{"text": "📭 Нет активных акций.", "image_url": None}]
+            return [{"text": "📭 Нет активных акций.", "buttons": main_menu_buttons(), "format": "html"}]
 
         result = []
         for promo in promotions:
@@ -176,21 +198,28 @@ async def get_formatted_promotions() -> List[Dict[str, Any]]:
 
                 start_str = f"📅 Начало: {start_date}\n" if start_date else ""
                 end_str = f"🔚 Окончание: {end_date}\n" if end_date else "🔚 Окончание: бессрочно\n"
-                text = f"🎁 *{title}*\n\n{start_str}{end_str}{desc}"
+                text = f"🎁 <b>{title}</b>\n\n{start_str}{end_str}{desc}"
 
                 result.append({
                     "text": text,
                     "image_url": image_url,
-                    "format": "markdown",
+                    "format": "html",
                 })
             except Exception as e:
                 logger.error(f"❌ Ошибка формирования акции: {e}", exc_info=True)
+
+        # Итоговое сообщение с кнопками главного меню (как в Telegram)
+        result.append({
+            "text": "🚀 Следите за новыми предложениями!",
+            "buttons": main_menu_buttons(),
+            "format": "html",
+        })
 
         return result
 
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки акций: {e}", exc_info=True)
-        return [{"text": "⚠️ Ошибка загрузки акций.", "image_url": None}]
+        return [{"text": "⚠️ Ошибка загрузки акций.", "buttons": main_menu_buttons(), "format": "html"}]
 
 
 # === 3. Справка — много сообщений ===
@@ -206,57 +235,73 @@ async def get_help_response(context: Dict[str, Any]) -> List[Dict[str, Any]]:
                 bot_version = "?.?"
 
         main_text = (
-            "📘 *Справка: как пользоваться ботом?*\n\n"
-            "Этот бот поможет вам быстро и удобно заказать *суточных цыплят* нужной породы.\n\n"
-            "*📌 Доступные действия:*\n\n"
-            "🔹 *Главное меню*\n"
-            "• 🐔 Каталог — выбрать и оформить заказ\n"
-            "• 📅 График — посмотреть все поставки\n"
-            "• 🎯 Акции — скидки и спецпредложения\n"
-            "• 📦 Мои заказы — отслеживать и отменять\n"
-            "• 📞 Контакты — связь с менеджером\n"
-            "• ℹ️ Справка — эта страница\n\n"
-            "*📌 Как сделать заказ:*\n"
+            "📘 <b>Справка: как пользоваться ботом?</b>\n\n"
+            "Этот бот поможет вам быстро и удобно заказать <b>суточных цыплят</b> нужной породы.\n\n"
+            "📌 <b>Доступные действия:</b>\n\n"
+            "🔹 <b>Главное меню</b>\n"
+            "Используйте кнопки внизу для навигации:\n"
+            "• 🐔 <b>Каталог</b> — выбрать и оформить заказ\n"
+            "• 📅 <b>График</b> — посмотреть все поставки\n"
+            "• 🎯 <b>Акции</b> — скидки и спецпредложения\n"
+            "• 📦 <b>Мои заказы</b> — отслеживать и отменять\n"
+            "• 📞 <b>Контакты</b> — связь с менеджером\n"
+            "• ℹ️ <b>Справка</b> — эта страница\n\n"
+            "📌 <b>Как сделать заказ:</b>\n"
             "1. Нажмите «🐔 Каталог»\n"
             "2. Выберите породу → инкубатор → дату → количество\n"
             "3. Введите номер телефона\n"
             "4. Подтвердите заказ\n"
             "Готово! Вы получите уведомление перед поставкой.\n\n"
-            "*🔔 Совет:*\n"
+            "🔔 <b>Совет:</b>\n"
             "При любом затруднении нажмите /back или /start — вы вернётесь в главное меню.\n\n"
             "Если остались вопросы — напишите менеджеру через «📞 Контакты». Мы всегда на связи! 🙏"
         )
 
         commands_text = (
-            "⌨️ *Полезные команды:*\n\n"
+            "⌨️ <b>Полезные команды (нажмите, чтобы использовать):</b>\n\n"
             "/start — перезапустить бот\n"
             "/back — вернуться в меню\n"
             "/help — показать эту справку"
         )
 
         contact_text = (
-            f"🔧 *Техническая информация:*\n"
-            f"• Версия: `{bot_version}`\n"
-            f"• Поддержка: +7 978 729-24-69\n"
-            f"• Для звонка: нажмите и удерживайте номер"
+            f"🔧 <b>Техническая информация:</b>\n"
+            f"• Версия: <code>{bot_version}</code>\n"
+            f"• Поддержка: <a href='tel:+79787292469'>+7 978 7292469</a>"
         )
 
         return [
-            {"text": main_text, "format": "markdown"},
-            {"text": commands_text, "format": "markdown"},
-            {"text": contact_text, "format": "markdown"},
+            {"text": main_text, "buttons": main_menu_buttons(), "format": "html"},
+            {"text": commands_text, "format": "html"},
+            {"text": contact_text, "format": "html"},
         ]
 
     except Exception as e:
         logger.error(f"❌ Ошибка при формировании справки: {e}", exc_info=True)
-        return [{"text": "⚠️ Ошибка загрузки справки."}]
+        return [{"text": "⚠️ Ошибка загрузки справки.", "buttons": main_menu_buttons(), "format": "html"}]
 
 
-# === 4. Контакты — универсальная поддержка ===
+# === 4. Контакты — как в Telegram (полная информация) ===
 async def get_contacts_response() -> List[Dict[str, Any]]:
     message = (
         "Наша компания предлагает широкий ассортимент товаров для сельскохозяйственных животных и домашних питомцев,\n"
         "включая корма, аксессуары, игрушки и товары для рыбалки 😊.\n\n"
+        "📩 Чтобы связаться с менеджером:\n"
+        "🌍 Крым\n"
+        f"- Лилия 📞 {make_tel_link('+7 978 061 25 52')}\n"
+        "  Региональный склад, Красногвардейский район, с. Полтавка, ул. Строителей, 15;\n"
+        f"- Анастасия 📞 {make_tel_link('+7 978 589 93 07')}\n"
+        "  Сакский, Черноморский, Раздольненский, Первомайский, Красноперекопский и Джанкойский районы;\n"
+        f"- Павел 📞 {make_tel_link('+7 978 589 93 15')}\n"
+        "  Красногвардейский, Нижнегорский, Советский, Кировский, Белогорский и Ленинский районы;\n"
+        f"- Денис 📞 {make_tel_link('+7 978 697 43 09')}\n"
+        "  Симферопольский и Бахчисарайский районы, г. Севастополь и ЮБК.\n\n"
+        "🌍 Херсонская область\n"
+        f"- Андрей 📞 {make_tel_link('+7 978 589 91 67')}\n\n"
+        "🌍 Запорожская область\n"
+        f"- Павел 📞 {make_tel_link('+7 990 144 36 63')}\n"
+        "  Региональный склад, Запорожская область, г. Мелитополь, Каховское шоссе, 24/2;\n"
+        f"- Вадим 📞 {make_tel_link('+7 990 144 70 03')}\n\n"
         "📞 Если нужна помощь с выбором или расчётом объёма — просто начните оформление, и мы поможем!\n\n"
         f"🌐 Полный ассортимент на сайте — <a href='{WEBSITE_URL}'>ZOOTOPIA.RU</a>"
     )
@@ -270,11 +315,7 @@ async def get_contacts_response() -> List[Dict[str, Any]]:
 
     result.append({
         "text": message,
-        "buttons": [[{
-            "type": "link",
-            "text": "🌐 Перейти на сайт",
-            "url": WEBSITE_URL
-        }]],
+        "buttons": main_menu_buttons(),
         "format": "html"
     })
 
@@ -295,7 +336,7 @@ async def get_orders_response(user_id: str) -> List[Dict[str, Any]]:
         )
 
         if not result:
-            return [{"text": "📭 У вас нет активных заказов."}]
+            return [{"text": "📭 У вас нет активных заказов.", "buttons": main_menu_buttons(), "format": "html"}]
 
         message_lines = ["📦 <b>Ваши заказы:</b>\n"]
         buttons = []
@@ -314,14 +355,15 @@ async def get_orders_response(user_id: str) -> List[Dict[str, Any]]:
                 status_emoji = "🟡" if row["status"] == "pending" else "🟢"
                 status_text = "ожидает подтверждения" if row["status"] == "pending" else "подтверждён"
 
-                # Текст заказа
+                # Текст заказа (как в Telegram)
                 order_text = (
                     f"{status_emoji} <b>{idx}.</b> 🐔 {breed_safe}{stock_info}\n"
                     f"📅 <b>Поставка:</b> {formatted_date}\n"
                     f"🕒 <b>Создан:</b> {formatted_created}\n"
                     f"📦 <b>{qty} шт.</b> × <b>{int(price_val)} руб.</b> = <b>{int(total)} руб.</b>\n"
                     f"📞 <b>Телефон:</b> {phone_safe}\n"
-                    f"ℹ️ <i>{status_text}</i>"
+                    f"ℹ️ <i>{status_text}</i>\n"
+                    f"{SEPARATOR}"
                 )
                 message_lines.append(order_text)
 
@@ -336,10 +378,10 @@ async def get_orders_response(user_id: str) -> List[Dict[str, Any]]:
                 logger.error(f"❌ Ошибка обработки заказа {row.get('id', 'unknown')}: {e}")
                 continue
 
-        full_text = "\n\n".join(message_lines)
+        full_text = "\n".join(message_lines) + "\n\nВыберите действие:"
 
-        # Общие кнопки
-        buttons += _back_button()
+        # Общие кнопки: отмена заказов + главное меню (всегда на последнем сообщении)
+        buttons += main_menu_buttons()
 
         return [{
             "text": full_text,
@@ -349,7 +391,7 @@ async def get_orders_response(user_id: str) -> List[Dict[str, Any]]:
 
     except Exception as e:
         logger.error(f"❌ Ошибка при загрузке заказов: {e}", exc_info=True)
-        return [{"text": "⚠️ Ошибка при загрузке заказов."}]
+        return [{"text": "⚠️ Ошибка при загрузке заказов.", "buttons": main_menu_buttons(), "format": "html"}]
 
 
 # === Отмена заказа ===
@@ -664,40 +706,34 @@ async def confirm_order_final(user_id: str) -> Dict[str, Any]:
 
 
 # === Главное меню (единая точка) ===
-def main_menu_response() -> Dict[str, Any]:
+def main_menu_response(user_name: str = "") -> Dict[str, Any]:
+    """Приветствие как в Telegram: 👋 Привет, {имя}! ..."""
+    name = escape(user_name.strip()) if user_name and user_name.strip() else "Друг"
+    text = (
+        f"👋 Привет, <b>{name}</b>!\n"
+        "Добро пожаловать в сервис <b>Chicken_sales_bot</b>! 🐔\n\n"
+        "Мы осуществляем продажу суточных цыплят сельскохозяйственных пород.\n"
+        "Выберите нужный раздел 👇"
+    )
     return {
-        "text": "🐔 Добро пожаловать!\n\nДоступные команды:\n• График\n• Акции\n• Каталог\n• Справка",
-        "buttons": [
-            [
-                {"type": "message", "text": "📅 График", "payload": PAYLOAD_SCHEDULE},
-                {"type": "message", "text": "🎁 Акции", "payload": PAYLOAD_PROMOTIONS}
-            ],
-            [
-                {"type": "message", "text": "📋 Каталог", "payload": PAYLOAD_CATALOG},
-                {"type": "message", "text": "📞 Контакты", "payload": PAYLOAD_CONTACTS}
-            ],
-            [
-                {"type": "message", "text": ORDERS_BUTTON_TEXT, "payload": PAYLOAD_ORDERS},
-                {"type": "message", "text": "ℹ️ Справка", "payload": PAYLOAD_HELP}
-            ]
-        ]
+        "text": text,
+        "buttons": main_menu_buttons(),
+        "format": "html",
     }
 
 
 def _fallback_menu_response() -> Dict[str, Any]:
     return {
         "text": "👋 Привет! Используйте меню.",
-        "buttons": [
-            [
-                {"type": "message", "text": "📋 Каталог", "payload": PAYLOAD_CATALOG},
-                {"type": "message", "text": "ℹ️ Справка", "payload": PAYLOAD_HELP}
-            ]
-        ]
+        "buttons": main_menu_buttons(),
+        "format": "html",
     }
 
 
 # === Главная маршрутизация ===
-async def handle_message_from_messenger(messenger: str, user_id: str, text: str, chat_id: str, bot) -> Any:
+async def handle_message_from_messenger(
+    messenger: str, user_id: str, text: str, chat_id: str, bot, user_name: str = ""
+) -> Any:
     logger.info(f"[{messenger.upper()}] Получено: {text} от {user_id}")
 
     context = {
@@ -705,7 +741,8 @@ async def handle_message_from_messenger(messenger: str, user_id: str, text: str,
         "user_id": user_id,
         "chat_id": chat_id,
         "bot": bot,
-        "text": text
+        "text": text,
+        "user_name": user_name,
     }
 
     session = get_session(user_id)
@@ -717,7 +754,7 @@ async def handle_message_from_messenger(messenger: str, user_id: str, text: str,
     # --- /start ---
     if raw_text == "/start" or raw_text == PAYLOAD_START:
         _reset_session(session)
-        return main_menu_response()
+        return main_menu_response(user_name=user_name)
 
     # --- Мои заказы ---
     if raw_text == PAYLOAD_ORDERS or "мои заказы" in text_lower:
@@ -738,7 +775,7 @@ async def handle_message_from_messenger(messenger: str, user_id: str, text: str,
     # --- График ---
     if raw_text == PAYLOAD_SCHEDULE or "график" in text_lower:
         text_only = await format_schedule_message()
-        return {"text": text_only, "format": "markdown"}
+        return {"text": text_only, "buttons": main_menu_buttons(), "format": "html"}
 
     # --- Акции ---
     if raw_text == PAYLOAD_PROMOTIONS or "акции" in text_lower:
@@ -781,7 +818,7 @@ async def handle_message_from_messenger(messenger: str, user_id: str, text: str,
     # --- Назад / отмена ввода ---
     if raw_text == PAYLOAD_BACK or "назад" in text_lower:
         _reset_session(session)
-        return main_menu_response()
+        return main_menu_response(user_name=user_name)
 
     # --- Ввод количества или телефона (активный диалог) ---
     if session.state == CHOOSE_QUANTITY:

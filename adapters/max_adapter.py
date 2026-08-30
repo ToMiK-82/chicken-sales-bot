@@ -46,6 +46,7 @@ MAX_TOKEN = os.getenv("MAX_TOKEN", "").strip()
 MAX_WEBHOOK_SECRET = os.getenv("MAX_WEBHOOK_SECRET", "").strip()
 MAX_WEBHOOK_URL = os.getenv("MAX_WEBHOOK_URL", "").strip()
 MAX_API_BASE = os.getenv("MAX_API_BASE", "https://platform-api2.max.ru")
+MAX_PUBLIC_BASE = os.getenv("MAX_PUBLIC_BASE", "https://bot.zootopia.ru").rstrip("/")
 MAX_MSG_DELAY = 0.55  # пауза между сообщениями одному пользователю (лимит 2 msg/сек)
 
 # === Логирование ===
@@ -112,9 +113,15 @@ async def send_max_message(
         body["format"] = format_
 
     attachments = []
-    # Картинка — только публичные URL (file:// из локального диска MAX не увидит)
-    if image_url and image_url.startswith("http"):
-        attachments.append({"type": "image", "payload": {"url": image_url}})
+    # Картинка: публичный URL, либо локальный файл под images/ → отдаём через nginx /static/
+    if image_url:
+        if image_url.startswith("file://"):
+            local_path = image_url[len("file://"):].replace("\\", "/")
+            base = local_path.split("/")[-1]
+            if base:
+                image_url = f"{MAX_PUBLIC_BASE}/static/{base}"
+        if image_url.startswith("http"):
+            attachments.append({"type": "image", "payload": {"url": image_url}})
 
     if buttons:
         keyboard = [[_to_max_button(b) for b in row] for row in buttons if row]
@@ -201,7 +208,7 @@ async def send_response(user_id: str, response: Any) -> None:
 # === Разбор входящего вебхука ===
 def parse_update(data: dict):
     """
-    Извлекает (user_id, chat_id, text, callback_id) из Update MAX.
+    Извлекает (user_id, chat_id, text, callback_id, user_name) из Update MAX.
     Возвращает None, если событие необрабатываемое.
     """
     update_type = data.get("update_type")
@@ -214,7 +221,8 @@ def parse_update(data: dict):
         user_id = str(sender.get("user_id") or "").strip()
         chat_id = str(recipient.get("chat_id") or "").strip()
         text = str(body.get("text") or "").strip()
-        return user_id, chat_id, text, None
+        user_name = str(sender.get("name") or "").strip()
+        return user_id, chat_id, text, None, user_name
 
     if update_type == "message_callback":
         callback = data.get("callback") or {}
@@ -223,12 +231,14 @@ def parse_update(data: dict):
         chat_id = str((data.get("message") or {}).get("recipient", {}).get("chat_id") or "").strip()
         text = str(callback.get("payload") or "").strip()
         callback_id = str(callback.get("callback_id") or "").strip()
-        return user_id, chat_id, text, callback_id
+        user_name = str(user.get("name") or "").strip()
+        return user_id, chat_id, text, callback_id, user_name
 
     if update_type == "bot_started":
         user = data.get("user") or data.get("sender") or {}
         user_id = str(user.get("user_id") or "").strip()
-        return user_id, "", "/start", None
+        user_name = str(user.get("name") or "").strip()
+        return user_id, "", "/start", None, user_name
 
     logger.info(f"ℹ️ [MAX] Пропускаем событие: {update_type}")
     return None
@@ -240,7 +250,7 @@ async def process_update(data: dict) -> None:
     if parsed is None:
         return
 
-    user_id, chat_id, text, callback_id = parsed
+    user_id, chat_id, text, callback_id, user_name = parsed
     if not user_id:
         logger.warning(f"⚠️ [MAX] Событие без user_id: {str(data)[:300]}")
         return
@@ -252,7 +262,9 @@ async def process_update(data: dict) -> None:
     try:
         from core.handlers import handle_message_from_messenger
 
-        response = await handle_message_from_messenger("max", user_id, text, chat_id or user_id, None)
+        response = await handle_message_from_messenger(
+            "max", user_id, text, chat_id or user_id, None, user_name=user_name
+        )
         logger.info(f"📨 [MAX] {user_id}: {text!r} → {str(response)[:200]}")
         await send_response(user_id, response)
     except Exception as e:
